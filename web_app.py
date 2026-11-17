@@ -1128,7 +1128,9 @@ async def receive_bridge_event(request: Request):
             )
         )
 
-        if event_type == "security" and payload.get("action") == "fake_admin_detected":
+        if (event_type == "security"
+                and payload.get("action") == "fake_admin_detected"
+                and payload.get("confirmed") is True):
             chat_user_id = payload.get("user_id")
             try:
                 target_id = int(chat_user_id)
@@ -1144,9 +1146,12 @@ async def receive_bridge_event(request: Request):
                     (chat_id, target_id)
                 ).fetchone()
             if protection and protection["enabled"] and not trusted:
-                target = telegram_api(
-                    "getChatMember", {"chat_id": chat_id, "user_id": target_id}
-                )
+                try:
+                    target = telegram_api(
+                        "getChatMember", {"chat_id": chat_id, "user_id": target_id}
+                    )
+                except HTTPException:
+                    target = {"status": "unknown"}
                 demoted = False
                 if target.get("status") == "administrator":
                     try:
