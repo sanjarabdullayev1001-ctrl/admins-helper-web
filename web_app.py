@@ -1143,7 +1143,7 @@ async def receive_bridge_event(request: Request):
         or payload.get("group_id")
         or ""
     )[:100]
-    if not re.fullmatch(r"-?[0-9]{5,20}", chat_id):
+    if event_type != "access" and not re.fullmatch(r"-?[0-9]{5,20}", chat_id):
         raise HTTPException(400, "Guruh ID noto‘g‘ri")
 
     event_id = str(
