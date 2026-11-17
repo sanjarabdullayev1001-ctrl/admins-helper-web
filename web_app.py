@@ -62,12 +62,13 @@ class PostgresCompat:
         self.connection = connection
 
     def execute(self, query, params=()):
-        query = re.sub(r"INSERT\\s+OR\\s+IGNORE", "INSERT", query, flags=re.I)
-        if query != query and False:
-            pass
         if re.search(r"INSERT\\s+OR\\s+IGNORE", query, flags=re.I):
+            query = re.sub(r"INSERT\\s+OR\\s+IGNORE", "INSERT", query, flags=re.I)
             query += " ON CONFLICT DO NOTHING"
-        query = re.sub(r"INTEGER\\s+PRIMARY\\s+KEY\\s+AUTOINCREMENT", "BIGSERIAL PRIMARY KEY", query, flags=re.I)
+        query = re.sub(
+            r"INTEGER\\s+PRIMARY\\s+KEY\\s+AUTOINCREMENT",
+            "BIGSERIAL PRIMARY KEY", query, flags=re.I
+        )
         query = query.replace("?", "%s")
         return self.connection.execute(query, params)
 
@@ -577,8 +578,8 @@ async def dashboard(request: Request):
     rows = ""
     for e in recent:
         rows += (
-            "<tr><td>" + str(e["event_type"]) +
-            "</td><td>" + str(e["chat_id"]) +
+            "<tr><td>" + html.escape(str(e["event_type"])) +
+            "</td><td>" + html.escape(str(e["chat_id"])) +
             "</td><td>" + datetime.fromtimestamp(
                 e["created_at"], timezone.utc
             ).strftime("%Y-%m-%d %H:%M:%S UTC") +
@@ -692,8 +693,8 @@ async def group_detail(chat_id: str, request: Request):
     rows = ""
     for e in events:
         rows += (
-            f"<tr><td>{e['event_type']}</td>"
-            f"<td><pre>{str(e['payload'])[:1500]}</pre></td>"
+            f"<tr><td>{html.escape(str(e['event_type']))}</td>"
+            f"<td><pre>{html.escape(str(e['payload'])[:1500])}</pre></td>"
             f"<td>{e['created_at']}</td></tr>"
         )
 
@@ -736,9 +737,9 @@ async def events_page(request: Request):
     rows = ""
     for e in events:
         rows += (
-            f"<tr><td>{e['event_type']}</td>"
-            f"<td>{e['chat_id']}</td>"
-            f"<td><pre>{str(e['payload'])[:1000]}</pre></td>"
+            f"<tr><td>{html.escape(str(e['event_type']))}</td>"
+            f"<td>{html.escape(str(e['chat_id']))}</td>"
+            f"<td><pre>{html.escape(str(e['payload'])[:1000])}</pre></td>"
             f"<td>{e['created_at']}</td></tr>"
         )
 
@@ -767,7 +768,7 @@ async def admins_page(request: Request):
     rows = ""
     for a in admins:
         rows += (
-            f"<tr><td>{a['username']}</td><td>{a['role']}</td>"
+            f"<tr><td>{html.escape(str(a['username']))}</td><td>{a['role']}</td>"
             f"<td>{'Faol' if a['active'] else 'O‘chirilgan'}</td>"
             f"<td>{a['id']}</td></tr>"
         )
@@ -836,8 +837,8 @@ async def audit_page(request: Request):
     rows = ""
     for x in logs:
         rows += (
-            f"<tr><td>{x['actor']}</td><td>{x['action']}</td>"
-            f"<td>{x['details']}</td><td>{x['created_at']}</td></tr>"
+            f"<tr><td>{html.escape(str(x['actor']))}</td><td>{html.escape(str(x['action']))}</td>"
+            f"<td>{html.escape(str(x['details']))}</td><td>{x['created_at']}</td></tr>"
         )
 
     return page("Audit", f"""
