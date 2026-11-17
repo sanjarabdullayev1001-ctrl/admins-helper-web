@@ -1149,25 +1149,28 @@ async def receive_bridge_event(request: Request):
                 )
                 demoted = False
                 if target.get("status") == "administrator":
-                    demoted = bool(telegram_api("promoteChatMember", {
-                        "chat_id": chat_id,
-                        "user_id": target_id,
-                        "can_manage_chat": False,
-                        "can_delete_messages": False,
-                        "can_manage_video_chats": False,
-                        "can_restrict_members": False,
-                        "can_promote_members": False,
-                        "can_change_info": False,
-                        "can_invite_users": False,
-                        "can_post_stories": False,
-                        "can_edit_stories": False,
-                        "can_delete_stories": False,
-                        "can_pin_messages": False,
-                        "can_manage_topics": False,
-                        "can_post_messages": False,
-                        "can_edit_messages": False,
-                        "can_manage_direct_messages": False
-                    }))
+                    try:
+                        demoted = bool(telegram_api("promoteChatMember", {
+                            "chat_id": chat_id,
+                            "user_id": target_id,
+                            "can_manage_chat": False,
+                            "can_delete_messages": False,
+                            "can_manage_video_chats": False,
+                            "can_restrict_members": False,
+                            "can_promote_members": False,
+                            "can_change_info": False,
+                            "can_invite_users": False,
+                            "can_post_stories": False,
+                            "can_edit_stories": False,
+                            "can_delete_stories": False,
+                            "can_pin_messages": False,
+                            "can_manage_topics": False,
+                            "can_post_messages": False,
+                            "can_edit_messages": False,
+                            "can_manage_direct_messages": False
+                        }))
+                    except HTTPException:
+                        demoted = False
                 warning = (
                     f"⚠️ SOXTA ADMIN HIMOYASI: Telegram ID {target_id} tekshirildi. "
                     + ("Admin huquqi bekor qilindi." if demoted else
