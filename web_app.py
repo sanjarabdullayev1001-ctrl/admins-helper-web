@@ -33,6 +33,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "") or os.getenv("BOT_TOKEN
 TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").lstrip("@")
 
 DB_PATH = os.getenv("WEB_DB_PATH", "admins_helper_web.sqlite3")
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 if not SESSION_SECRET:
     raise RuntimeError("SESSION_SECRET sozlanmagan")
@@ -45,7 +46,7 @@ app = FastAPI(title=APP_NAME)
 app.add_middleware(
     SessionMiddleware,
     secret_key=SESSION_SECRET,
-    https_only=True,
+    https_only=COOKIE_SECURE,
     same_site="lax",
     max_age=60 * 60 * 12,
 )
