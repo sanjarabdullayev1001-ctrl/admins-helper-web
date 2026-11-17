@@ -717,12 +717,13 @@ async def groups_page(request: Request):
 
     rows = ""
     for g in groups:
+        safe_chat_id = urllib.parse.quote(str(g["chat_id"]), safe="-")
         rows += (
             f"<tr><td>{html.escape(str(g['title']))}</td>"
             f"<td>{html.escape(str(g['chat_id']))}</td>"
             f"<td>{g['members']}</td>"
-            f"<td><a href='/group/{g['chat_id']}'>KO‘RISH</a> | "
-          f"<a href='/group/{g['chat_id']}/protection'>HIMOYA</a></td></tr>"
+            f"<td><a href='/group/{safe_chat_id}'>KO‘RISH</a> | "
+          f"<a href='/group/{safe_chat_id}/protection'>HIMOYA</a></td></tr>"
         )
 
     return page("Guruhlar", f"""
@@ -842,6 +843,8 @@ async def group_protection_page(chat_id: str, request: Request):
 def ensure_group_manager(user, chat_id):
     if user["role"] == "owner":
         return
+    if user.get("role") != "telegram_admin":
+        raise HTTPException(403, "Bu guruhni boshqarish ruxsati yo‘q")
     with db() as c:
         row = c.execute(
             "SELECT 1 FROM group_access WHERE telegram_id=? AND chat_id=?",
@@ -849,6 +852,39 @@ def ensure_group_manager(user, chat_id):
         ).fetchone()
     if not row:
         raise HTTPException(403, "Bu guruhni boshqarish ruxsati yo‘q")
+
+    # Re-check Telegram permissions at the moment of every protection change.
+    # A stale dashboard session must not retain moderation access.
+    try:
+        member = telegram_api(
+            "getChatMember",
+            {"chat_id": chat_id, "user_id": user["telegram_id"]}
+        )
+        bot = telegram_api("getMe")
+        bot_member = telegram_api(
+            "getChatMember", {"chat_id": chat_id, "user_id": bot["id"]}
+        )
+    except HTTPException:
+        raise
+    if member.get("status") not in {"creator", "administrator"}:
+        with db() as c:
+            c.execute(
+                "DELETE FROM group_access WHERE telegram_id=? AND chat_id=?",
+                (user["telegram_id"], chat_id)
+            )
+        raise HTTPException(403, "Telegram admin huquqingiz tasdiqlanmadi; guruh ruxsati bekor qilindi")
+    if bot_member.get("status") not in {"creator", "administrator"}:
+        with db() as c:
+            c.execute(
+                "DELETE FROM group_access WHERE telegram_id=? AND chat_id=?",
+                (user["telegram_id"], chat_id)
+            )
+        raise HTTPException(403, "Bot endi guruh administratori emas; guruh ruxsati bekor qilindi")
+    with db() as c:
+        c.execute(
+            "UPDATE group_access SET verified_at=? WHERE telegram_id=? AND chat_id=?",
+            (now(), user["telegram_id"], chat_id)
+        )
 
 
 @app.post("/api/group-protection/trusted/remove")
@@ -1106,6 +1142,8 @@ async def receive_bridge_event(request: Request):
         or payload.get("group_id")
         or ""
     )[:100]
+    if not re.fullmatch(r"-?[0-9]{5,20}", chat_id):
+        raise HTTPException(400, "Guruh ID noto‘g‘ri")
 
     event_id = str(
         payload.get("event_id")
@@ -1115,7 +1153,7 @@ async def receive_bridge_event(request: Request):
     created = now()
 
     with db() as c:
-        c.execute(
+        inserted = c.execute(
             "INSERT OR IGNORE INTO bridge_events "
             "(event_id,event_type,chat_id,payload,created_at) "
             "VALUES(?,?,?,?,?)",
@@ -1126,9 +1164,10 @@ async def receive_bridge_event(request: Request):
                 json.dumps(payload, ensure_ascii=False),
                 created
             )
-        )
+        ).rowcount
 
-        if (event_type == "security"
+        # Idempotency: a retried event must not repeat moderation or warnings.
+        if inserted and (event_type == "security"
                 and payload.get("action") == "fake_admin_detected"
                 and payload.get("confirmed") is True):
             chat_user_id = payload.get("user_id")
