@@ -7,6 +7,9 @@ import hmac
 import hashlib
 import secrets
 import sqlite3
+import html
+import urllib.parse
+import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -26,6 +29,8 @@ BRIDGE_SECRET = os.getenv("BRIDGE_SECRET", "")
 OWNER_USERNAME = os.getenv("WEB_OWNER_USERNAME", "owner")
 OWNER_PASSWORD = os.getenv("WEB_OWNER_PASSWORD", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "") or os.getenv("BOT_TOKEN", "")
+TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").lstrip("@")
 
 DB_PATH = os.getenv("WEB_DB_PATH", "admins_helper_web.sqlite3")
 
@@ -52,10 +57,46 @@ pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 # DATABASE
 # =========================================================
 
+class PostgresCompat:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def execute(self, query, params=()):
+        query = re.sub(r"INSERT\\s+OR\\s+IGNORE", "INSERT", query, flags=re.I)
+        if query != query and False:
+            pass
+        if re.search(r"INSERT\\s+OR\\s+IGNORE", query, flags=re.I):
+            query += " ON CONFLICT DO NOTHING"
+        query = re.sub(r"INTEGER\\s+PRIMARY\\s+KEY\\s+AUTOINCREMENT", "BIGSERIAL PRIMARY KEY", query, flags=re.I)
+        query = query.replace("?", "%s")
+        return self.connection.execute(query, params)
+
+    def executescript(self, script):
+        for statement in script.split(";"):
+            if statement.strip():
+                self.execute(statement)
+
+    def commit(self):
+        self.connection.commit()
+
+    def rollback(self):
+        self.connection.rollback()
+
+    def close(self):
+        self.connection.close()
+
+
 @contextmanager
 def db():
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
+    if DATABASE_URL:
+        import psycopg
+        from psycopg.rows import dict_row
+        dsn = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        raw = psycopg.connect(dsn, connect_timeout=10, row_factory=dict_row)
+        conn = PostgresCompat(raw)
+    else:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        conn.row_factory = sqlite3.Row
     try:
         yield conn
         conn.commit()
@@ -109,6 +150,23 @@ def init_db():
             success INTEGER NOT NULL,
             created_at INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS telegram_users (
+            telegram_id BIGINT PRIMARY KEY,
+            username TEXT NOT NULL DEFAULT '',
+            first_name TEXT NOT NULL DEFAULT '',
+            photo_url TEXT NOT NULL DEFAULT '',
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS group_access (
+            telegram_id BIGINT NOT NULL,
+            chat_id TEXT NOT NULL,
+            verified_at INTEGER NOT NULL,
+            PRIMARY KEY (telegram_id, chat_id)
+        );
         """)
 
         c.execute(
@@ -139,16 +197,32 @@ def now():
 
 def current_user(request: Request):
     uid = request.session.get("uid")
-    if not uid:
-        return None
+    if uid:
+        with db() as c:
+            user = c.execute(
+                "SELECT * FROM admins WHERE id=? AND active=1",
+                (uid,)
+            ).fetchone()
+        if user:
+            return dict(user)
 
-    with db() as c:
-        user = c.execute(
-            "SELECT * FROM admins WHERE id=? AND active=1",
-            (uid,)
-        ).fetchone()
-
-    return dict(user) if user else None
+    telegram_id = request.session.get("tg_uid")
+    if telegram_id:
+        with db() as c:
+            user = c.execute(
+                "SELECT telegram_id,username,first_name,photo_url,active "
+                "FROM telegram_users WHERE telegram_id=? AND active=1",
+                (telegram_id,)
+            ).fetchone()
+        if user:
+            result = dict(user)
+            result.update({
+                "id": result["telegram_id"],
+                "role": "telegram_admin",
+                "permissions": '{"dashboard":true,"groups":true,"events":true}',
+            })
+            return result
+    return None
 
 
 def require_login(request: Request):
@@ -166,7 +240,7 @@ def require_owner(request: Request):
 
 
 def can(user, permission):
-    if user["role"] == "owner":
+    if user["role"] in {"owner", "telegram_admin"}:
         return True
 
     try:
@@ -227,7 +301,13 @@ def page(title, content):
     <body>
       <header>
         <div class="logo">ADMINS HELPER</div>
-        <a href="/">BOSH SAHIFA</a>
+        <nav>
+          <a href="/">BOSH SAHIFA</a>
+          &nbsp; | &nbsp;
+          <a href="/admin-login">ADMIN PANEL</a>
+          &nbsp; | &nbsp;
+          <a href="/admin-login">AKKAUNT ULASH</a>
+        </nav>
       </header>
       <main>{content}</main>
     </body>
@@ -247,6 +327,7 @@ async def home():
       <h1>ADMINS HELPER</h1>
       <p>Guruhlar boshqaruvi, statistika va xavfsizlik nazorati uchun yagona platforma.</p>
       <a class="btn" href="/admin-login">ADMIN PANEL →</a>
+      <a class="btn secondary" href="/admin-login">AKKAUNT ULASH</a>
     </div>
     <div class="grid">
       <div class="card"><h2>Statistika</h2><p>Ulangan guruhlar va faollik ko‘rsatkichlari.</p></div>
@@ -263,18 +344,45 @@ async def home():
 
 @app.get("/admin-login", response_class=HTMLResponse)
 async def login_page():
-    return page("Admin login", """
-    <div class="card" style="max-width:450px;margin:auto">
+    telegram_login = ""
+    if TELEGRAM_BOT_USERNAME and TELEGRAM_BOT_TOKEN:
+        telegram_login = f"""
+        <div class="card">
+          <h2>Telegram akkauntini ulash</h2>
+          <p>Faqat Telegram orqali tasdiqlangan shaxsingiz ulanadi. Shaxsiy akkaunt sessiyasi yoki maxfiy kodi saqlanmaydi.</p>
+          <script async src="https://telegram.org/js/telegram-widget.js?22"
+            data-telegram-login="{html.escape(TELEGRAM_BOT_USERNAME)}"
+            data-size="large" data-userpic="false"
+            data-onauth="onTelegramAuth(user)" data-request-access="write"></script>
+        </div>
+        <script>
+        async function onTelegramAuth(user) {
+          const response = await fetch("/api/auth/telegram", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(user)
+          });
+          const result = await response.json();
+          if (response.ok && result.ok) location.href = "/dashboard";
+          else alert(result.detail || "Telegram tasdiqlash amalga oshmadi");
+        }
+        </script>
+        """
+    else:
+        telegram_login = '<p class="muted">Telegram orqali kirish uchun serverda TELEGRAM_BOT_USERNAME va TELEGRAM_BOT_TOKEN sozlanishi kerak.</p>'
+    return page("Admin login", f"""
+    <div class="card" style="max-width:520px;margin:auto">
       <h1>ADMIN PANEL</h1>
-      <p>Shaxsiy hisobingizga kiring.</p>
+      <p>Owner hisobi yoki Telegram akkauntingiz orqali kiring.</p>
       <form method="post" action="/api/auth/login">
-        <label>Login</label>
+        <label>Owner login</label>
         <input name="username" required maxlength="64">
         <label>Parol</label>
         <input name="password" type="password" required maxlength="200">
         <button class="btn" type="submit">TIZIMGA KIRISH →</button>
       </form>
     </div>
+    {telegram_login}
     """)
 
 
@@ -321,6 +429,111 @@ async def login(request: Request):
     return RedirectResponse("/dashboard", status_code=303)
 
 
+@app.post("/api/auth/telegram")
+async def telegram_login(request: Request):
+    if not TELEGRAM_BOT_TOKEN:
+        raise HTTPException(503, "Telegram login sozlanmagan")
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("bad payload")
+        supplied_hash = str(data.get("hash", ""))
+        auth_date = int(data.get("auth_date", 0))
+        telegram_id = int(data.get("id", 0))
+    except Exception:
+        raise HTTPException(400, "Telegram ma’lumoti noto‘g‘ri")
+
+    if not supplied_hash or telegram_id <= 0 or auth_date > now() + 60 or now() - auth_date > 86400:
+        raise HTTPException(401, "Telegram tasdiqlash muddati tugagan")
+
+    check_data = {str(k): str(v) for k, v in data.items() if k != "hash"}
+    check_string = "\\n".join(f"{k}={check_data[k]}" for k in sorted(check_data))
+    secret_key = hashlib.sha256(TELEGRAM_BOT_TOKEN.encode()).digest()
+    expected_hash = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_hash, supplied_hash):
+        raise HTTPException(401, "Telegram imzosi noto‘g‘ri")
+
+    username = str(data.get("username", ""))[:64]
+    first_name = str(data.get("first_name", ""))[:128]
+    photo_url = str(data.get("photo_url", ""))[:1000]
+    with db() as c:
+        c.execute(
+            "INSERT INTO telegram_users(telegram_id,username,first_name,photo_url,active,created_at,updated_at) "
+            "VALUES(?,?,?,?,1,?,?) ON CONFLICT(telegram_id) DO UPDATE SET "
+            "username=excluded.username,first_name=excluded.first_name,photo_url=excluded.photo_url,"
+            "active=1,updated_at=excluded.updated_at",
+            (telegram_id, username, first_name, photo_url, now(), now())
+        )
+    request.session.clear()
+    request.session["tg_uid"] = telegram_id
+    audit(f"telegram:{telegram_id}", "TELEGRAM_LOGIN", username)
+    return {"ok": True}
+
+
+def telegram_api(method, params=None):
+    if not TELEGRAM_BOT_TOKEN:
+        raise HTTPException(503, "Telegram bot token sozlanmagan")
+    url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/" + method
+    body = urllib.parse.urlencode(params or {}).encode()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=body), timeout=8) as response:
+            result = json.loads(response.read(1024 * 1024))
+    except Exception:
+        raise HTTPException(502, "Telegram API bilan bog‘lanib bo‘lmadi")
+    if not result.get("ok"):
+        raise HTTPException(400, "Telegram guruhni tekshira olmadi")
+    return result.get("result")
+
+
+@app.post("/api/telegram/groups/link")
+async def link_telegram_group(request: Request):
+    user = require_login(request)
+    if user.get("role") != "telegram_admin":
+        raise HTTPException(403, "Guruh ulash uchun Telegram orqali kiring")
+    form = await request.form()
+    chat_id = str(form.get("chat_id", "")).strip()
+    if not re.fullmatch(r"-?\\d{5,20}", chat_id):
+        raise HTTPException(400, "Guruh ID noto‘g‘ri")
+    member = telegram_api("getChatMember", {"chat_id": chat_id, "user_id": user["telegram_id"]})
+    if member.get("status") not in {"creator", "administrator"}:
+        raise HTTPException(403, "Bu guruhda Telegram administratori ekaningiz tasdiqlanmadi")
+    chat = telegram_api("getChat", {"chat_id": chat_id})
+    bot = telegram_api("getMe")
+    bot_member = telegram_api("getChatMember", {"chat_id": chat_id, "user_id": bot["id"]})
+    if bot_member.get("status") not in {"administrator", "creator"}:
+        raise HTTPException(403, "Avval botni shu guruhga administrator qiling")
+    try:
+        count = int(telegram_api("getChatMemberCount", {"chat_id": chat_id}))
+    except Exception:
+        count = 0
+    with db() as c:
+        c.execute(
+            "INSERT INTO groups_data(chat_id,title,members,last_seen,updated_at) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET title=excluded.title,members=excluded.members,updated_at=excluded.updated_at",
+            (chat_id, str(chat.get("title") or chat.get("username") or chat_id)[:250], count, now(), now())
+        )
+        c.execute(
+            "INSERT INTO group_access(telegram_id,chat_id,verified_at) VALUES(?,?,?) "
+            "ON CONFLICT(telegram_id,chat_id) DO UPDATE SET verified_at=excluded.verified_at",
+            (user["telegram_id"], chat_id, now())
+        )
+    audit(f"telegram:{user['telegram_id']}", "GROUP_ACCESS_GRANTED", chat_id)
+    return RedirectResponse("/dashboard", status_code=303)
+
+
+@app.post("/api/telegram/groups/unlink")
+async def unlink_telegram_group(request: Request):
+    user = require_login(request)
+    if user.get("role") != "telegram_admin":
+        raise HTTPException(403, "Telegram hisob talab qilinadi")
+    form = await request.form()
+    chat_id = str(form.get("chat_id", "")).strip()
+    with db() as c:
+        c.execute("DELETE FROM group_access WHERE telegram_id=? AND chat_id=?", (user["telegram_id"], chat_id))
+    audit(f"telegram:{user['telegram_id']}", "GROUP_ACCESS_REVOKED", chat_id)
+    return RedirectResponse("/dashboard", status_code=303)
+
+
 @app.post("/api/auth/logout")
 async def logout(request: Request):
     user = current_user(request)
@@ -341,22 +554,24 @@ async def dashboard(request: Request):
     if not can(user, "dashboard"):
         raise HTTPException(403, "Dashboard ruxsati yo‘q")
 
+    owner_view = user["role"] == "owner"
+    scope = "" if owner_view else " WHERE chat_id IN (SELECT chat_id FROM group_access WHERE telegram_id=?)"
+    params = () if owner_view else (user["telegram_id"],)
     with db() as c:
         groups = c.execute(
-            "SELECT COUNT(*) n FROM groups_data"
+            "SELECT COUNT(*) n FROM groups_data" + scope, params
         ).fetchone()["n"]
-
         messages = c.execute(
-            "SELECT COUNT(*) n FROM bridge_events WHERE event_type='message'"
+            "SELECT COUNT(*) n FROM bridge_events WHERE event_type='message'" +
+            ("" if owner_view else " AND chat_id IN (SELECT chat_id FROM group_access WHERE telegram_id=?)"),
+            params
         ).fetchone()["n"]
-
         events = c.execute(
-            "SELECT COUNT(*) n FROM bridge_events"
+            "SELECT COUNT(*) n FROM bridge_events" + scope, params
         ).fetchone()["n"]
-
         recent = c.execute(
-            "SELECT event_type,chat_id,payload,created_at "
-            "FROM bridge_events ORDER BY created_at DESC LIMIT 15"
+            "SELECT event_type,chat_id,payload,created_at FROM bridge_events" +
+            scope + " ORDER BY created_at DESC LIMIT 15", params
         ).fetchall()
 
     rows = ""
@@ -370,18 +585,33 @@ async def dashboard(request: Request):
             "</td></tr>"
         )
 
+    owner_links = '<a class="btn secondary" href="/admins">ADMINLAR</a><a class="btn secondary" href="/audit">AUDIT</a>' if owner_view else ''
+    account_box = ""
+    if user["role"] == "telegram_admin":
+        account_box = f"""
+        <div class="card">
+          <h2>AKKAUNT ULASH</h2>
+          <p>Telegram: @{html.escape(user.get('username') or str(user['telegram_id']))}</p>
+          <form method="post" action="/api/telegram/groups/link">
+            <label>Admin bo‘lgan guruhingiz ID raqami</label>
+            <input name="chat_id" required placeholder="-1001234567890">
+            <button class="btn">GURUHNI TEKSHIRIB ULASH</button>
+          </form>
+          <p class="muted">Faqat Telegram API orqali adminligingiz tekshirilgan va bot administrator bo‘lgan guruhlar ulanadi.</p>
+        </div>
+        """
     return page("Dashboard", f"""
     <div class="card">
       <h1>Dashboard</h1>
-      <p>Salom, {user['username']} ({user['role']})</p>
+      <p>Salom, {html.escape(str(user.get('username') or user.get('first_name') or user['role']))} ({user['role']})</p>
       <a class="btn" href="/groups">GURUHLAR</a>
       <a class="btn secondary" href="/events">HODISALAR</a>
-      <a class="btn secondary" href="/admins">ADMINLAR</a>
-      <a class="btn secondary" href="/audit">AUDIT</a>
+      {owner_links}
       <form method="post" action="/api/auth/logout">
         <button class="btn secondary">CHIQISH</button>
       </form>
     </div>
+    {account_box}
     <div class="grid">
       <div class="card"><p>Ulangan guruhlar</p><div class="number">{groups}</div></div>
       <div class="card"><p>Xabar hodisalari</p><div class="number">{messages}</div></div>
@@ -405,16 +635,21 @@ async def groups_page(request: Request):
     if not can(user, "groups"):
         raise HTTPException(403, "Guruhlar ruxsati yo‘q")
 
+    if user["role"] == "owner":
+        query = "SELECT * FROM groups_data ORDER BY updated_at DESC"
+        params = ()
+    else:
+        query = ("SELECT g.* FROM groups_data g JOIN group_access a ON a.chat_id=g.chat_id "
+                 "WHERE a.telegram_id=? ORDER BY g.updated_at DESC")
+        params = (user["telegram_id"],)
     with db() as c:
-        groups = c.execute(
-            "SELECT * FROM groups_data ORDER BY updated_at DESC"
-        ).fetchall()
+        groups = c.execute(query, params).fetchall()
 
     rows = ""
     for g in groups:
         rows += (
-            f"<tr><td>{g['title']}</td>"
-            f"<td>{g['chat_id']}</td>"
+            f"<tr><td>{html.escape(str(g['title']))}</td>"
+            f"<td>{html.escape(str(g['chat_id']))}</td>"
             f"<td>{g['members']}</td>"
             f"<td><a href='/group/{g['chat_id']}'>KO‘RISH</a></td></tr>"
         )
@@ -437,11 +672,14 @@ async def group_detail(chat_id: str, request: Request):
         raise HTTPException(403, "Ruxsat yo‘q")
 
     with db() as c:
-        group = c.execute(
-            "SELECT * FROM groups_data WHERE chat_id=?",
-            (chat_id,)
-        ).fetchone()
-
+        if user["role"] == "owner":
+            group = c.execute("SELECT * FROM groups_data WHERE chat_id=?", (chat_id,)).fetchone()
+        else:
+            group = c.execute(
+                "SELECT g.* FROM groups_data g JOIN group_access a ON a.chat_id=g.chat_id "
+                "WHERE g.chat_id=? AND a.telegram_id=?",
+                (chat_id, user["telegram_id"])
+            ).fetchone()
         events = c.execute(
             "SELECT event_type,payload,created_at FROM bridge_events "
             "WHERE chat_id=? ORDER BY created_at DESC LIMIT 100",
@@ -483,9 +721,17 @@ async def events_page(request: Request):
         raise HTTPException(403, "Hodisalar ruxsati yo‘q")
 
     with db() as c:
-        events = c.execute(
-            "SELECT * FROM bridge_events ORDER BY created_at DESC LIMIT 200"
-        ).fetchall()
+        if user["role"] == "owner":
+            events = c.execute(
+                "SELECT * FROM bridge_events ORDER BY created_at DESC LIMIT 200"
+            ).fetchall()
+        else:
+            events = c.execute(
+                "SELECT * FROM bridge_events WHERE chat_id IN "
+                "(SELECT chat_id FROM group_access WHERE telegram_id=?) "
+                "ORDER BY created_at DESC LIMIT 200",
+                (user["telegram_id"],)
+            ).fetchall()
 
     rows = ""
     for e in events:
@@ -629,7 +875,7 @@ async def receive_bridge_event(request: Request):
 
     event_type = payload.get("type")
 
-    if event_type not in {"access", "group", "message", "member"}:
+    if event_type not in {"access", "group", "message", "member", "admin_change", "security"}:
         raise HTTPException(400, "Event turi noto‘g‘ri")
 
     chat_id = str(
