@@ -625,15 +625,24 @@ async def dashboard(request: Request):
         raise HTTPException(403, "Dashboard ruxsati yo‘q")
 
     owner_view = user["role"] == "owner"
-    scope = "" if owner_view else " WHERE chat_id IN (SELECT chat_id FROM group_access WHERE telegram_id=?)"
-    params = () if owner_view else (user["telegram_id"],)
+    telegram_view = user["role"] == "telegram_admin"
+    if owner_view:
+        scope, params = "", ()
+    elif telegram_view:
+        scope = " WHERE chat_id IN (SELECT chat_id FROM group_access WHERE telegram_id=?)"
+        params = (user["telegram_id"],)
+    else:
+        # Internal web admins without a Telegram identity have no group scope.
+        scope, params = " WHERE 1=0", ()
     with db() as c:
         groups = c.execute(
             "SELECT COUNT(*) n FROM groups_data" + scope, params
         ).fetchone()["n"]
         messages = c.execute(
             "SELECT COUNT(*) n FROM bridge_events WHERE event_type='message'" +
-            ("" if owner_view else " AND chat_id IN (SELECT chat_id FROM group_access WHERE telegram_id=?)"),
+            ("" if owner_view else
+             " AND chat_id IN (SELECT chat_id FROM group_access WHERE telegram_id=?)"
+             if telegram_view else " AND 1=0"),
             params
         ).fetchone()["n"]
         events = c.execute(
@@ -709,10 +718,13 @@ async def groups_page(request: Request):
     if user["role"] == "owner":
         query = "SELECT * FROM groups_data ORDER BY updated_at DESC"
         params = ()
-    else:
+    elif user["role"] == "telegram_admin":
         query = ("SELECT g.* FROM groups_data g JOIN group_access a ON a.chat_id=g.chat_id "
                  "WHERE a.telegram_id=? ORDER BY g.updated_at DESC")
         params = (user["telegram_id"],)
+    else:
+        query = "SELECT * FROM groups_data WHERE 1=0"
+        params = ()
     with db() as c:
         groups = c.execute(query, params).fetchall()
 
@@ -748,17 +760,19 @@ async def group_detail(chat_id: str, request: Request):
     with db() as c:
         if user["role"] == "owner":
             group = c.execute("SELECT * FROM groups_data WHERE chat_id=?", (chat_id,)).fetchone()
-        else:
+        elif user["role"] == "telegram_admin":
             group = c.execute(
                 "SELECT g.* FROM groups_data g JOIN group_access a ON a.chat_id=g.chat_id "
                 "WHERE g.chat_id=? AND a.telegram_id=?",
                 (chat_id, user["telegram_id"])
             ).fetchone()
+        else:
+            group = None
         events = c.execute(
             "SELECT event_type,payload,created_at FROM bridge_events "
             "WHERE chat_id=? ORDER BY created_at DESC LIMIT 100",
             (chat_id,)
-        ).fetchall()
+        ).fetchall() if group else []
 
     if not group:
         raise HTTPException(404, "Guruh topilmadi")
@@ -790,12 +804,14 @@ async def group_protection_page(chat_id: str, request: Request):
     with db() as c:
         if user["role"] == "owner":
             group = c.execute("SELECT * FROM groups_data WHERE chat_id=?", (chat_id,)).fetchone()
-        else:
+        elif user["role"] == "telegram_admin":
             group = c.execute(
                 "SELECT g.* FROM groups_data g JOIN group_access a ON a.chat_id=g.chat_id "
                 "WHERE g.chat_id=? AND a.telegram_id=?",
                 (chat_id, user["telegram_id"])
             ).fetchone()
+        else:
+            group = None
         state = c.execute(
             "SELECT enabled FROM group_protection WHERE chat_id=?", (chat_id,)
         ).fetchone()
@@ -985,13 +1001,15 @@ async def events_page(request: Request):
             events = c.execute(
                 "SELECT * FROM bridge_events ORDER BY created_at DESC LIMIT 200"
             ).fetchall()
-        else:
+        elif user["role"] == "telegram_admin":
             events = c.execute(
                 "SELECT * FROM bridge_events WHERE chat_id IN "
                 "(SELECT chat_id FROM group_access WHERE telegram_id=?) "
                 "ORDER BY created_at DESC LIMIT 200",
                 (user["telegram_id"],)
             ).fetchall()
+        else:
+            events = []
 
     rows = ""
     for e in events:
