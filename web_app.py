@@ -721,7 +721,8 @@ async def groups_page(request: Request):
             f"<tr><td>{html.escape(str(g['title']))}</td>"
             f"<td>{html.escape(str(g['chat_id']))}</td>"
             f"<td>{g['members']}</td>"
-            f"<td><a href='/group/{g['chat_id']}'>KO‘RISH</a></td></tr>"
+            f"<td><a href='/group/{g['chat_id']}'>KO‘RISH</a> | "
+          f"<a href='/group/{g['chat_id']}/protection'>HIMOYA</a></td></tr>"
         )
 
     return page("Guruhlar", f"""
@@ -805,7 +806,12 @@ async def group_protection_page(chat_id: str, request: Request):
     enabled = bool(state and state["enabled"])
     rows = "".join(
         f"<tr><td>{html.escape(str(item['telegram_id']))}</td>"
-        f"<td>{item['created_at']}</td></tr>" for item in trusted
+        f"<td>{item['created_at']}</td><td>"
+        f"<form method='post' action='/api/group-protection/trusted/remove'>"
+        f"<input type='hidden' name='chat_id' value='{html.escape(chat_id)}'>"
+        f"<input type='hidden' name='telegram_id' value='{item['telegram_id']}'>"
+        f"<button class='btn secondary'>O‘CHIRISH</button></form></td></tr>"
+        for item in trusted
     )
     status = "YOQILGAN" if enabled else "O‘CHIRILGAN"
     return page("Soxta admin himoyasi", f"""
@@ -826,7 +832,7 @@ async def group_protection_page(chat_id: str, request: Request):
         <input name="telegram_id" required inputmode="numeric" pattern="[0-9]{5,15}">
         <button class="btn secondary">ISHONCHLI ADMIN QO‘SHISH</button>
       </form>
-      <table><tr><th>Telegram ID</th><th>Qo‘shilgan vaqt</th></tr>{rows}</table>
+      <table><tr><th>Telegram ID</th><th>Qo‘shilgan vaqt</th><th></th></tr>{rows}</table>
       <p class="muted">Himoyani yoqishdan oldin guruhdagi barcha haqiqiy adminlarni ishonchli ro‘yxatga kiriting. Botda “Boshqa adminlarni tayinlash” huquqi bo‘lishi kerak.</p>
       <a class="btn secondary" href="/group/{html.escape(chat_id)}">GURUHGA QAYTISH</a>
     </div>
@@ -843,6 +849,35 @@ def ensure_group_manager(user, chat_id):
         ).fetchone()
     if not row:
         raise HTTPException(403, "Bu guruhni boshqarish ruxsati yo‘q")
+
+
+@app.post("/api/group-protection/trusted/remove")
+async def remove_trusted_group_admin(request: Request):
+    user = require_login(request)
+    form = await request.form()
+    chat_id = str(form.get("chat_id", "")).strip()
+    raw_id = str(form.get("telegram_id", "")).strip()
+    ensure_group_manager(user, chat_id)
+    if not raw_id.isdigit():
+        raise HTTPException(400, "Telegram ID noto‘g‘ri")
+    telegram_id = int(raw_id)
+    with db() as c:
+        c.execute(
+            "DELETE FROM trusted_group_admins WHERE chat_id=? AND telegram_id=?",
+            (chat_id, telegram_id)
+        )
+        remaining = c.execute(
+            "SELECT COUNT(*) n FROM trusted_group_admins WHERE chat_id=?",
+            (chat_id,)
+        ).fetchone()["n"]
+        if remaining == 0:
+            c.execute(
+                "UPDATE group_protection SET enabled=0,updated_at=? WHERE chat_id=?",
+                (now(), chat_id)
+            )
+    audit(str(user.get("username") or user.get("telegram_id") or "owner"),
+          "TRUSTED_GROUP_ADMIN_REMOVE", f"{chat_id}:{telegram_id}")
+    return RedirectResponse(f"/group/{chat_id}/protection", status_code=303)
 
 
 @app.post("/api/group-protection/toggle")
