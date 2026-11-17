@@ -408,7 +408,11 @@ async def login(request: Request):
             (username,)
         ).fetchone()
 
-        valid = bool(user and pwd.verify(password, user["password_hash"]))
+        valid = bool(
+            user
+            and user["role"] == "owner"
+            and pwd.verify(password, user["password_hash"])
+        )
 
         c.execute(
             "INSERT INTO login_attempts(username,success,created_at) VALUES(?,?,?)",
@@ -486,6 +490,45 @@ def telegram_api(method, params=None):
     return result.get("result")
 
 
+def refresh_telegram_group_access(user):
+    if user.get("role") != "telegram_admin":
+        return
+    with db() as c:
+        linked = c.execute(
+            "SELECT chat_id,verified_at FROM group_access WHERE telegram_id=?",
+            (user["telegram_id"],)
+        ).fetchall()
+    for item in linked:
+        if now() - int(item["verified_at"]) < 300:
+            continue
+        chat_id = str(item["chat_id"])
+        try:
+            member = telegram_api(
+                "getChatMember",
+                {"chat_id": chat_id, "user_id": user["telegram_id"]}
+            )
+            bot = telegram_api("getMe")
+            bot_member = telegram_api(
+                "getChatMember", {"chat_id": chat_id, "user_id": bot["id"]}
+            )
+        except HTTPException:
+            # Telegram vaqtincha javob bermasa, mavjud ruxsatni avtomatik o‘chirmaymiz.
+            continue
+        still_admin = member.get("status") in {"creator", "administrator"}
+        bot_is_admin = bot_member.get("status") in {"creator", "administrator"}
+        with db() as c:
+            if not still_admin or not bot_is_admin:
+                c.execute(
+                    "DELETE FROM group_access WHERE telegram_id=? AND chat_id=?",
+                    (user["telegram_id"], chat_id)
+                )
+            else:
+                c.execute(
+                    "UPDATE group_access SET verified_at=? WHERE telegram_id=? AND chat_id=?",
+                    (now(), user["telegram_id"], chat_id)
+                )
+
+
 @app.post("/api/telegram/groups/link")
 async def link_telegram_group(request: Request):
     user = require_login(request)
@@ -551,6 +594,7 @@ async def logout(request: Request):
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     user = require_login(request)
+    refresh_telegram_group_access(user)
 
     if not can(user, "dashboard"):
         raise HTTPException(403, "Dashboard ruxsati yo‘q")
@@ -632,6 +676,7 @@ async def dashboard(request: Request):
 @app.get("/groups", response_class=HTMLResponse)
 async def groups_page(request: Request):
     user = require_login(request)
+    refresh_telegram_group_access(user)
 
     if not can(user, "groups"):
         raise HTTPException(403, "Guruhlar ruxsati yo‘q")
@@ -668,6 +713,7 @@ async def groups_page(request: Request):
 @app.get("/group/{chat_id}", response_class=HTMLResponse)
 async def group_detail(chat_id: str, request: Request):
     user = require_login(request)
+    refresh_telegram_group_access(user)
 
     if not can(user, "groups"):
         raise HTTPException(403, "Ruxsat yo‘q")
@@ -717,6 +763,7 @@ async def group_detail(chat_id: str, request: Request):
 @app.get("/events", response_class=HTMLResponse)
 async def events_page(request: Request):
     user = require_login(request)
+    refresh_telegram_group_access(user)
 
     if not can(user, "events"):
         raise HTTPException(403, "Hodisalar ruxsati yo‘q")
