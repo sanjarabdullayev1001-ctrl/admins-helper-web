@@ -62,11 +62,11 @@ class PostgresCompat:
         self.connection = connection
 
     def execute(self, query, params=()):
-        if re.search(r"INSERT\s+OR\\s+IGNORE", query, flags=re.I):
-            query = re.sub(r"INSERT\s+OR\\s+IGNORE", "INSERT", query, flags=re.I)
+        if re.search(r"INSERT\s+OR\s+IGNORE", query, flags=re.I):
+            query = re.sub(r"INSERT\s+OR\s+IGNORE", "INSERT", query, flags=re.I)
             query += " ON CONFLICT DO NOTHING"
         query = re.sub(
-            r"INTEGER\s+PRIMARY\\s+KEY\\s+AUTOINCREMENT",
+            r"INTEGER\s+PRIMARY\\s+KEY\s+AUTOINCREMENT",
             "BIGSERIAL PRIMARY KEY", query, flags=re.I
         )
         query = query.replace("?", "%s")
