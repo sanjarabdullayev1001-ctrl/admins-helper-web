@@ -62,11 +62,11 @@ class PostgresCompat:
         self.connection = connection
 
     def execute(self, query, params=()):
-        if re.search(r"INSERT\\s+OR\\s+IGNORE", query, flags=re.I):
-            query = re.sub(r"INSERT\\s+OR\\s+IGNORE", "INSERT", query, flags=re.I)
+        if re.search(r"INSERT\s+OR\\s+IGNORE", query, flags=re.I):
+            query = re.sub(r"INSERT\s+OR\\s+IGNORE", "INSERT", query, flags=re.I)
             query += " ON CONFLICT DO NOTHING"
         query = re.sub(
-            r"INTEGER\\s+PRIMARY\\s+KEY\\s+AUTOINCREMENT",
+            r"INTEGER\s+PRIMARY\\s+KEY\\s+AUTOINCREMENT",
             "BIGSERIAL PRIMARY KEY", query, flags=re.I
         )
         query = query.replace("?", "%s")
@@ -448,7 +448,7 @@ async def telegram_login(request: Request):
         raise HTTPException(401, "Telegram tasdiqlash muddati tugagan")
 
     check_data = {str(k): str(v) for k, v in data.items() if k != "hash"}
-    check_string = "\\n".join(f"{k}={check_data[k]}" for k in sorted(check_data))
+    check_string = "\n".join(f"{k}={check_data[k]}" for k in sorted(check_data))
     secret_key = hashlib.sha256(TELEGRAM_BOT_TOKEN.encode()).digest()
     expected_hash = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected_hash, supplied_hash):
@@ -493,7 +493,7 @@ async def link_telegram_group(request: Request):
         raise HTTPException(403, "Guruh ulash uchun Telegram orqali kiring")
     form = await request.form()
     chat_id = str(form.get("chat_id", "")).strip()
-    if not re.fullmatch(r"-?\\d{5,20}", chat_id):
+    if not re.fullmatch(r"-?\d{5,20}", chat_id):
         raise HTTPException(400, "Guruh ID noto‘g‘ri")
     member = telegram_api("getChatMember", {"chat_id": chat_id, "user_id": user["telegram_id"]})
     if member.get("status") not in {"creator", "administrator"}:
