@@ -665,7 +665,7 @@ async def groups_page(request: Request):
     """)
 
 
-@app.get("/group/{chat_id}", response_class=HTMLResponse)
+@app.get("/group/{html.escape(str(chat_id))}", response_class=HTMLResponse)
 async def group_detail(chat_id: str, request: Request):
     user = require_login(request)
 
@@ -700,8 +700,8 @@ async def group_detail(chat_id: str, request: Request):
 
     return page("Guruh", f"""
     <div class="card">
-      <h1>{group['title']}</h1>
-      <p>Guruh ID: {chat_id}</p>
+      <h1>{html.escape(str(group['title']))}</h1>
+      <p>Guruh ID: {html.escape(str(chat_id))}</p>
       <p>A’zolar: {group['members']}</p>
       <h2>Guruh hodisalari</h2>
       <table><tr><th>Turi</th><th>Ma’lumot</th><th>Vaqt</th></tr>{rows}</table>
