@@ -347,12 +347,12 @@ async def home():
 async def login_page():
     telegram_login = ""
     if TELEGRAM_BOT_USERNAME and TELEGRAM_BOT_TOKEN:
-        telegram_login = f'''
+        telegram_login = """
         <div class="card">
           <h2>Telegram akkauntini ulash</h2>
-          <p>Faqat Telegram orqali tasdiqlangan shaxsingiz ulanadi. Shaxsiy akkaunt sessiyasi yoki maxfiy kodi saqlanmaydi.</p>
+          <p>Telegram orqali shaxsingiz tasdiqlanadi. Shaxsiy akkaunt sessiyasi yoki maxfiy kodi saqlanmaydi.</p>
           <script async src="https://telegram.org/js/telegram-widget.js?22"
-            data-telegram-login="{html.escape(TELEGRAM_BOT_USERNAME)}"
+            data-telegram-login="__BOT_USERNAME__"
             data-size="large" data-userpic="false"
             data-onauth="onTelegramAuth(user)" data-request-access="write"></script>
         </div>
@@ -368,7 +368,7 @@ async def login_page():
           else alert(result.detail || "Telegram tasdiqlash amalga oshmadi");
         }
         </script>
-        '''
+        """.replace("__BOT_USERNAME__", html.escape(TELEGRAM_BOT_USERNAME))
     else:
         telegram_login = '<p class="muted">Telegram orqali kirish uchun serverda TELEGRAM_BOT_USERNAME va TELEGRAM_BOT_TOKEN sozlanishi kerak.</p>'
     return page("Admin login", f"""
