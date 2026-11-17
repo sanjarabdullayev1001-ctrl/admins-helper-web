@@ -51,3 +51,31 @@ SINOV HOLATI
 Python syntax, JS syntax, Owner login, dashboard, admin yaratish va himoya sozlamalari
 lokal testda tekshirildi. Productionga chiqarishdan oldin yangi alohida servisda
 HTTPS, PostgreSQL va mavjud bot bilan bridge integratsiyasi alohida sinovdan o‘tkazilsin.
+
+YANGI WEB PANEL SOZLAMALARI
+==========================
+
+Render Web Service:
+- Build Command: pip install -r requirements_web.txt
+- Start Command: uvicorn web_app:app --host 0.0.0.0 --port $PORT
+
+Majburiy Environment Variables:
+- SESSION_SECRET: uzun, tasodifiy maxfiy qiymat
+- WEB_OWNER_USERNAME: Owner login
+- WEB_OWNER_PASSWORD: Owner uchun kuchli parol
+- BRIDGE_SECRET: bot va sayt orasidagi umumiy maxfiy kalit
+- DATABASE_URL: Render PostgreSQL ulanish manzili
+
+Telegram orqali akkaunt ulash:
+- TELEGRAM_BOT_TOKEN: bot tokeni (faqat Render Environment Variables ichida)
+- TELEGRAM_BOT_USERNAME: bot username, @ belgisiz
+- BotFather orqali /setdomain buyrug‘ida sayt domenini tasdiqlash kerak.
+- Bot guruhda administrator bo‘lishi kerak.
+- Guruh ulash vaqtida Telegram API foydalanuvchi va bot adminligini tekshiradi.
+
+XAVFSIZLIK:
+- Telegram login widget akkaunt egasini tasdiqlaydi; foydalanuvchining shaxsiy sessiyasi yoki SMS/login kodi olinmaydi.
+- Telegram admini faqat o‘zi admin bo‘lgan va bot ulangan guruhni ko‘ra oladi.
+- Owner barcha guruhlarni ko‘radi.
+- Telegram login va guruh ulash ishlashi uchun yuqoridagi token va domen sozlamalari shart.
+- Soxta adminni avtomatik aniqlash va adminlikdan tushirish botning alohida Telegram moderation kodini ham talab qiladi. Web panelning o‘zi buni bajarmaydi; noto‘g‘ri aniqlash bilan haqiqiy adminni tushirib yubormaslik uchun bu qism bot kodi va guruhning ishonchli admin ro‘yxati bilan birga joriy qilinishi kerak.
