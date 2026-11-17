@@ -88,7 +88,7 @@ SOXTA ADMIN HIMOYASI
 - Himoyani yoqishdan oldin guruhdagi barcha haqiqiy adminlarning Telegram ID raqamini ro‘yxatga kiriting.
 - Guruhni birinchi ulagan Telegram admin avtomatik ishonchli ro‘yxatga qo‘shiladi.
 - Himoya yoqilganda, bot BRIDGE_SECRET bilan tasdiqlangan security event yuborishi kerak:
-  {"type":"security","action":"fake_admin_detected","chat_id":"-100...","user_id":123456}
+  {"type":"security","action":"fake_admin_detected","confirmed":true,"chat_id":"-100...","user_id":123456}
 - Web servis foydalanuvchi haqiqiy Telegram admin ekanini qayta tekshiradi. Agar himoya yoqilgan va u ishonchli ro‘yxatda bo‘lmasa, bot API orqali admin huquqlarini bekor qilishga urinadi va guruhga ogohlantirish yuboradi.
 - Ban berilmaydi. Agar botda "Boshqa adminlarni tayinlash" (can_promote_members) huquqi bo‘lmasa, adminlikni bekor qila olmaydi; lekin ogohlantirish yuborishga urinadi.
 - Creator/egani avtomatik tushirishga urinilmaydi.
