@@ -12,6 +12,7 @@ initialize_database(os.getenv("MINIAPP_DB", "miniapp.db"), os.getenv("ADMIN_PASS
 
 OWNER_ID = int(os.getenv('OWNER_ID', '0') or 0)
 SESSION_SECRET = os.getenv('SESSION_SECRET', '')
+BRIDGE_SECRET = os.getenv('BRIDGE_SECRET', '')
 OWNER_USERNAME = os.getenv('WEB_OWNER_USERNAME', 'owner').strip().lower()
 OWNER_PASSWORD = os.getenv('WEB_OWNER_PASSWORD', '')
 COOKIE_NAME = 'ah_session'
