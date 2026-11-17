@@ -3,3 +3,4 @@ uvicorn[standard]
 python-multipart
 itsdangerous
 passlib
+psycopg[binary]
