@@ -665,7 +665,7 @@ async def groups_page(request: Request):
     """)
 
 
-@app.get("/group/{html.escape(str(chat_id))}", response_class=HTMLResponse)
+@app.get("/group/{chat_id}", response_class=HTMLResponse)
 async def group_detail(chat_id: str, request: Request):
     user = require_login(request)
 
