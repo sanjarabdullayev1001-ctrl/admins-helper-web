@@ -95,3 +95,5 @@ SOXTA ADMIN HIMOYASI
 - Bu eventni aniqlab yuborish uchun Enzonic botning main.py qismida Telegram chat_member/admin o‘zgarishlarini kuzatish va faqat tasdiqlangan shubhali hodisani bridge'ga yuborish kodi ham kerak. Hozirgi GitHub repozitoriyda main.py mavjud emas; shu sababli aniqlashni botga ulash hali bajarilmagan.
 
 Eslatma: Telegram Login Widget akkaunt egasining shaxsini tasdiqlaydi. U to‘liq shaxsiy Telegram sessiyasini ulab bermaydi va login kod/parolni saytga saqlamaydi.
+
+CI: GitHub Actions tekshiruvi web_app.py va db_backend.py sintaksisini tekshiradi.
