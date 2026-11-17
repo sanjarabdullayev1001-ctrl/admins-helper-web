@@ -168,6 +168,20 @@ def init_db():
             verified_at INTEGER NOT NULL,
             PRIMARY KEY (telegram_id, chat_id)
         );
+
+        CREATE TABLE IF NOT EXISTS group_protection (
+            chat_id TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS trusted_group_admins (
+            chat_id TEXT NOT NULL,
+            telegram_id BIGINT NOT NULL,
+            added_by BIGINT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (chat_id, telegram_id)
+        );
         """)
 
         c.execute(
@@ -561,6 +575,16 @@ async def link_telegram_group(request: Request):
             "ON CONFLICT(telegram_id,chat_id) DO UPDATE SET verified_at=excluded.verified_at",
             (user["telegram_id"], chat_id, now())
         )
+        c.execute(
+            "INSERT INTO trusted_group_admins(chat_id,telegram_id,added_by,created_at) "
+            "VALUES(?,?,?,?) ON CONFLICT(chat_id,telegram_id) DO NOTHING",
+            (chat_id, user["telegram_id"], user["telegram_id"], now())
+        )
+        c.execute(
+            "INSERT INTO group_protection(chat_id,enabled,updated_at) VALUES(?,0,?) "
+            "ON CONFLICT(chat_id) DO NOTHING",
+            (chat_id, now())
+        )
     audit(f"telegram:{user['telegram_id']}", "GROUP_ACCESS_GRANTED", chat_id)
     return RedirectResponse("/dashboard", status_code=303)
 
@@ -754,6 +778,122 @@ async def group_detail(chat_id: str, request: Request):
       <a class="btn secondary" href="/groups">ORTGA</a>
     </div>
     """)
+
+
+@app.get("/group/{chat_id}/protection", response_class=HTMLResponse)
+async def group_protection_page(chat_id: str, request: Request):
+    user = require_login(request)
+    refresh_telegram_group_access(user)
+    with db() as c:
+        if user["role"] == "owner":
+            group = c.execute("SELECT * FROM groups_data WHERE chat_id=?", (chat_id,)).fetchone()
+        else:
+            group = c.execute(
+                "SELECT g.* FROM groups_data g JOIN group_access a ON a.chat_id=g.chat_id "
+                "WHERE g.chat_id=? AND a.telegram_id=?",
+                (chat_id, user["telegram_id"])
+            ).fetchone()
+        state = c.execute(
+            "SELECT enabled FROM group_protection WHERE chat_id=?", (chat_id,)
+        ).fetchone()
+        trusted = c.execute(
+            "SELECT telegram_id,created_at FROM trusted_group_admins WHERE chat_id=? ORDER BY telegram_id",
+            (chat_id,)
+        ).fetchall()
+    if not group:
+        raise HTTPException(404, "Guruh topilmadi")
+    enabled = bool(state and state["enabled"])
+    rows = "".join(
+        f"<tr><td>{html.escape(str(item['telegram_id']))}</td>"
+        f"<td>{item['created_at']}</td></tr>" for item in trusted
+    )
+    status = "YOQILGAN" if enabled else "O‘CHIRILGAN"
+    return page("Soxta admin himoyasi", f"""
+    <div class="card">
+      <h1>SOXTA ADMIN HIMOYASI</h1>
+      <p>Guruh: {html.escape(str(group['title']))}</p>
+      <p>Holat: <b>{status}</b></p>
+      <p>Himoya yoqilganda bot tasdiqlangan shubhali admin hodisasini yuboradi. Faqat Telegram’da haqiqiy administrator bo‘lgan, lekin ishonchli ro‘yxatda yo‘q akkauntning admin huquqi bekor qilinadi. Ban berilmaydi.</p>
+      <form method="post" action="/api/group-protection/toggle">
+        <input type="hidden" name="chat_id" value="{html.escape(chat_id)}">
+        <input type="hidden" name="enabled" value="{0 if enabled else 1}">
+        <button class="btn">{'HIMOYANI O‘CHIRISH' if enabled else 'HIMOYANI YOQISH'}</button>
+      </form>
+      <h2>Ishonchli adminlar</h2>
+      <form method="post" action="/api/group-protection/trusted/add">
+        <input type="hidden" name="chat_id" value="{html.escape(chat_id)}">
+        <label>Telegram user ID</label>
+        <input name="telegram_id" required inputmode="numeric" pattern="[0-9]{5,15}">
+        <button class="btn secondary">ISHONCHLI ADMIN QO‘SHISH</button>
+      </form>
+      <table><tr><th>Telegram ID</th><th>Qo‘shilgan vaqt</th></tr>{rows}</table>
+      <p class="muted">Himoyani yoqishdan oldin guruhdagi barcha haqiqiy adminlarni ishonchli ro‘yxatga kiriting. Botda “Boshqa adminlarni tayinlash” huquqi bo‘lishi kerak.</p>
+      <a class="btn secondary" href="/group/{html.escape(chat_id)}">GURUHGA QAYTISH</a>
+    </div>
+    """)
+
+
+def ensure_group_manager(user, chat_id):
+    if user["role"] == "owner":
+        return
+    with db() as c:
+        row = c.execute(
+            "SELECT 1 FROM group_access WHERE telegram_id=? AND chat_id=?",
+            (user["telegram_id"], chat_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(403, "Bu guruhni boshqarish ruxsati yo‘q")
+
+
+@app.post("/api/group-protection/toggle")
+async def toggle_group_protection(request: Request):
+    user = require_login(request)
+    form = await request.form()
+    chat_id = str(form.get("chat_id", "")).strip()
+    enabled = int(str(form.get("enabled", "0"))) == 1
+    ensure_group_manager(user, chat_id)
+    if enabled:
+        with db() as c:
+            count = c.execute(
+                "SELECT COUNT(*) n FROM trusted_group_admins WHERE chat_id=?",
+                (chat_id,)
+            ).fetchone()["n"]
+        if count < 1:
+            raise HTTPException(400, "Avval ishonchli adminlarni kiriting")
+    with db() as c:
+        c.execute(
+            "INSERT INTO group_protection(chat_id,enabled,updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at",
+            (chat_id, int(enabled), now())
+        )
+    audit(str(user.get("username") or user.get("telegram_id") or "owner"),
+          "GROUP_PROTECTION_TOGGLE", f"{chat_id}:{int(enabled)}")
+    return RedirectResponse(f"/group/{chat_id}/protection", status_code=303)
+
+
+@app.post("/api/group-protection/trusted/add")
+async def add_trusted_group_admin(request: Request):
+    user = require_login(request)
+    form = await request.form()
+    chat_id = str(form.get("chat_id", "")).strip()
+    raw_id = str(form.get("telegram_id", "")).strip()
+    ensure_group_manager(user, chat_id)
+    if not re.fullmatch(r"[0-9]{5,15}", raw_id):
+        raise HTTPException(400, "Telegram ID noto‘g‘ri")
+    telegram_id = int(raw_id)
+    member = telegram_api("getChatMember", {"chat_id": chat_id, "user_id": telegram_id})
+    if member.get("status") not in {"creator", "administrator"}:
+        raise HTTPException(400, "Bu foydalanuvchi hozir guruh administratori emas")
+    actor_id = int(user.get("telegram_id") or 0)
+    with db() as c:
+        c.execute(
+            "INSERT INTO trusted_group_admins(chat_id,telegram_id,added_by,created_at) "
+            "VALUES(?,?,?,?) ON CONFLICT(chat_id,telegram_id) DO NOTHING",
+            (chat_id, telegram_id, actor_id, now())
+        )
+    audit(str(user.get("username") or actor_id or "owner"),
+          "TRUSTED_GROUP_ADMIN_ADD", f"{chat_id}:{telegram_id}")
+    return RedirectResponse(f"/group/{chat_id}/protection", status_code=303)
 
 
 # =========================================================
@@ -952,6 +1092,55 @@ async def receive_bridge_event(request: Request):
                 created
             )
         )
+
+        if event_type == "security" and payload.get("action") == "fake_admin_detected":
+            chat_user_id = payload.get("user_id")
+            try:
+                target_id = int(chat_user_id)
+            except (TypeError, ValueError):
+                raise HTTPException(400, "Security event user_id noto‘g‘ri")
+            with db() as c:
+                protection = c.execute(
+                    "SELECT enabled FROM group_protection WHERE chat_id=?",
+                    (chat_id,)
+                ).fetchone()
+                trusted = c.execute(
+                    "SELECT 1 FROM trusted_group_admins WHERE chat_id=? AND telegram_id=?",
+                    (chat_id, target_id)
+                ).fetchone()
+            if protection and protection["enabled"] and not trusted:
+                target = telegram_api(
+                    "getChatMember", {"chat_id": chat_id, "user_id": target_id}
+                )
+                demoted = False
+                if target.get("status") == "administrator":
+                    demoted = bool(telegram_api("promoteChatMember", {
+                        "chat_id": chat_id,
+                        "user_id": target_id,
+                        "can_manage_chat": False,
+                        "can_delete_messages": False,
+                        "can_manage_video_chats": False,
+                        "can_restrict_members": False,
+                        "can_promote_members": False,
+                        "can_change_info": False,
+                        "can_invite_users": False,
+                        "can_post_stories": False,
+                        "can_edit_stories": False,
+                        "can_delete_stories": False,
+                        "can_pin_messages": False,
+                        "can_manage_topics": False,
+                        "can_post_messages": False,
+                        "can_edit_messages": False,
+                        "can_manage_direct_messages": False
+                    }))
+                warning = (
+                    f"⚠️ SOXTA ADMIN HIMOYASI: Telegram ID {target_id} tekshirildi. "
+                    + ("Admin huquqi bekor qilindi." if demoted else
+                       "Admin huquqini avtomatik bekor qilib bo‘lmadi; guruh egalari tekshirsin.")
+                    + " Ban berilmadi."
+                )
+                telegram_api("sendMessage", {"chat_id": chat_id, "text": warning})
+                audit("bot-bridge", "FAKE_ADMIN_REVIEW", f"{chat_id}:{target_id}:demoted={demoted}")
 
         if event_type == "group":
             title = str(
