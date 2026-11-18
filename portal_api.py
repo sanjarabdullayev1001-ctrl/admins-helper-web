@@ -15,6 +15,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         CREATE INDEX IF NOT EXISTS web_events_chat_time ON bridge_events(chat_id,created_at);
         CREATE TABLE IF NOT EXISTS signup_challenges(telegram_id TEXT PRIMARY KEY,username TEXT NOT NULL,password_hash TEXT NOT NULL,code_hash TEXT NOT NULL,ip TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,resend_after INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS signup_code_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT,telegram_id TEXT NOT NULL,code TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'queued');
+        CREATE TABLE IF NOT EXISTS portal_security_events(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT NOT NULL,telegram_id TEXT NOT NULL DEFAULT '',event TEXT NOT NULL,ip TEXT NOT NULL DEFAULT '',details TEXT NOT NULL DEFAULT '',created_at INTEGER NOT NULL);
         """)
 
     with db() as c:
@@ -135,14 +136,18 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         data=await request.json()
         username=str(data.get("username","")).strip()
         password=str(data.get("password",""))
+        ip = (request.client.host if request.client else "unknown")[:80]
         with db() as c:
             u=c.execute("SELECT * FROM admins WHERE username=?",(username,)).fetchone()
             if not u or not pwd.verify(password,u["password_hash"]):
+                c.execute("INSERT INTO portal_security_events(username,event,ip,details,created_at) VALUES(?,?,?,?,?)",(username,"LOGIN_FAILED",ip,"Login yoki parol noto‘g‘ri",now()))
                 raise HTTPException(401,"Login yoki parol noto‘g‘ri")
             tid=str(u["telegram_id"] or "")
             blocked=bool(tid and c.execute("SELECT 1 FROM web_blacklist WHERE telegram_id=?",(tid,)).fetchone())
             if not u["active"] or blocked:
                 return JSONResponse({"blocked":True,"detail":"ACCOUNT BLOCKED"},status_code=403)
+        with db() as c:
+            c.execute("INSERT INTO portal_security_events(username,telegram_id,event,ip,details,created_at) VALUES(?,?,?,?,?,?)",(username,str(u["telegram_id"] or ""),"LOGIN_SUCCESS",ip,"Muvaffaqiyatli kirish",now()))
         request.session.clear(); request.session["uid"]=u["id"]
         audit(username,"LOGIN","Portalga kirdi")
         return {"id":u["id"],"username":u["username"],"role":u["role"]}
@@ -208,6 +213,16 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
             except:p={}
             ev.append({"type":r["event_type"],"actor":p.get("sender") or p.get("user_id") or p.get("actor",""),"summary":str(p.get("text") or p.get("kind") or p.get("status") or p)[:400],"time":stamp(r["created_at"])})
         return {"group":{"chat_id":chat_id,"title":g["title"],"members":g["members"]},"events":ev}
+
+    @app.get("/api/v2/security")
+    async def v2_security(request: Request):
+        u=require_login(request)
+        with db() as c:
+            if u["role"] == "owner":
+                rows=c.execute("SELECT * FROM portal_security_events ORDER BY created_at DESC LIMIT 300").fetchall()
+            else:
+                rows=c.execute("SELECT * FROM portal_security_events WHERE username=? ORDER BY created_at DESC LIMIT 100",(u["username"],)).fetchall()
+        return {"events":[{"type":r["event"],"actor":r["username"],"telegram_id":r["telegram_id"],"ip":r["ip"],"summary":r["details"],"time":stamp(r["created_at"]),"severity":"warning" if r["event"]=="LOGIN_FAILED" else "info"} for r in rows]}
 
     @app.get("/api/v2/events")
     async def v2_events(request: Request):
