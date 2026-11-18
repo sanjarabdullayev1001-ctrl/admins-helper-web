@@ -12,6 +12,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         CREATE TABLE IF NOT EXISTS web_blacklist(telegram_id TEXT PRIMARY KEY, reason TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS web_applications(id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, actor TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', payload TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS web_outgoing(id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', created_at INTEGER NOT NULL, media_type TEXT NOT NULL DEFAULT '', media_name TEXT NOT NULL DEFAULT '', media_data BLOB, result TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS web_moderation(id INTEGER PRIMARY KEY AUTOINCREMENT,chat_id TEXT NOT NULL,user_id TEXT NOT NULL,action TEXT NOT NULL,reason TEXT NOT NULL DEFAULT '',requested_by TEXT NOT NULL,created_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'queued',result TEXT NOT NULL DEFAULT '');
         CREATE INDEX IF NOT EXISTS web_events_chat_time ON bridge_events(chat_id,created_at);
         CREATE TABLE IF NOT EXISTS signup_challenges(telegram_id TEXT PRIMARY KEY,username TEXT NOT NULL,password_hash TEXT NOT NULL,code_hash TEXT NOT NULL,ip TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,resend_after INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS signup_code_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT,telegram_id TEXT NOT NULL,code TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'queued');
@@ -414,6 +415,46 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
                 p = {}
             messages.append({'id':r['event_id'],'chat_id':r['chat_id'],'sender':str(p.get('sender') or 'Telegram foydalanuvchisi'),'sender_id':str(p.get('sender_id') or ''),'text':str(p.get('text') or ''),'time':stamp(r['created_at']),'direction':'incoming'})
         return {'groups':[{'chat_id':r['chat_id'],'title':r['title'],'members':r['members']} for r in groups], 'items':[{'id':r['id'],'chat_id':r['chat_id'],'sender':r['sender'],'text':r['text'],'status':r['status'],'time':stamp(r['created_at']),'media_type':r['media_type'],'result':r['result'],'direction':'outgoing'} for r in rows], 'messages':messages}
+
+    @app.post('/api/v2/group/ban')
+    async def v2_group_ban(request: Request):
+        u=require_login(request)
+        data=await request.json()
+        chat_id=str(data.get("chat_id","")).strip()
+        user_id=str(data.get("user_id","")).strip()
+        reason=str(data.get("reason","")).strip()[:300]
+        if not chat_id or not user_id.isdigit():
+            raise HTTPException(400,"Guruh yoki Telegram ID noto‘g‘ri")
+        require_group_access(u,chat_id)
+        with db() as c:
+            if not c.execute("SELECT 1 FROM groups_data WHERE chat_id=?",(chat_id,)).fetchone():
+                raise HTTPException(404,"Guruh topilmadi")
+            cur=c.execute("INSERT INTO web_moderation(chat_id,user_id,action,reason,requested_by,created_at) VALUES(?,?,?,?,?,?)",(chat_id,user_id,"ban",reason,u["username"],now()))
+            item_id=cur.lastrowid
+        audit(u["username"],"GROUP_BAN_REQUEST",f"{chat_id}:{user_id}:{item_id}")
+        return {"ok":True,"id":item_id,"status":"queued"}
+
+    @app.get('/bridge/moderation')
+    async def bridge_moderation(request: Request):
+        check_bridge_secret(request)
+        with db() as c:
+            rows=c.execute("SELECT id,chat_id,user_id,action,reason FROM web_moderation WHERE status='queued' OR (status='sending' AND created_at<?) ORDER BY id LIMIT 10",(now()-120,)).fetchall()
+            ids=[r["id"] for r in rows]
+            if ids:
+                marks=",".join("?" for _ in ids)
+                c.execute(f"UPDATE web_moderation SET status='sending',created_at=? WHERE id IN ({marks})",[now(),*ids])
+        return {"items":[dict(r) for r in rows]}
+
+    @app.post('/bridge/moderation/{item_id}/result')
+    async def bridge_moderation_result(item_id:int,request:Request):
+        check_bridge_secret(request)
+        data=await request.json()
+        status=str(data.get("status","failed"))
+        if status not in {"sent","failed"}:
+            raise HTTPException(400,"Status noto‘g‘ri")
+        with db() as c:
+            c.execute("UPDATE web_moderation SET status=?,result=? WHERE id=?",(status,str(data.get("result",""))[:500],item_id))
+        return {"ok":True}
 
     @app.get('/bridge/outgoing')
     async def bridge_outgoing(request: Request):
