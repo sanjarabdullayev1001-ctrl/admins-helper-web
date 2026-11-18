@@ -711,6 +711,13 @@ async def receive_bridge_event(request: Request):
                 c.execute("INSERT INTO group_access(telegram_id,chat_id,role,updated_at) VALUES(?,?,?,?) ON CONFLICT(telegram_id,chat_id) DO UPDATE SET role=excluded.role,updated_at=excluded.updated_at",
                           (telegram_id, chat_id, role, created))
 
+        if event_type == "member" and chat_id:
+            kind = str(payload.get("kind") or "")
+            delta = 1 if kind == "join" else (-1 if kind == "leave" else 0)
+            if delta:
+                c.execute("UPDATE groups_data SET members=MAX(0,members+?),updated_at=? WHERE chat_id=?",
+                          (delta, created, chat_id))
+
         if event_type == "group":
             title = str(
                 payload.get("title")
