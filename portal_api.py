@@ -13,6 +13,8 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         CREATE TABLE IF NOT EXISTS web_applications(id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, actor TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', payload TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS web_outgoing(id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', created_at INTEGER NOT NULL, media_type TEXT NOT NULL DEFAULT '', media_name TEXT NOT NULL DEFAULT '', media_data BLOB, result TEXT NOT NULL DEFAULT '');
         CREATE INDEX IF NOT EXISTS web_events_chat_time ON bridge_events(chat_id,created_at);
+        CREATE TABLE IF NOT EXISTS signup_challenges(telegram_id TEXT PRIMARY KEY,username TEXT NOT NULL,password_hash TEXT NOT NULL,code_hash TEXT NOT NULL,ip TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,resend_after INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS signup_code_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT,telegram_id TEXT NOT NULL,code TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'queued');
         """)
 
     with db() as c:
@@ -34,27 +36,94 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
             raise HTTPException(404, "Portal UI topilmadi")
         return HTMLResponse(p.read_text(encoding="utf-8"))
 
-    @app.post("/api/v2/register")
-    async def v2_register(request: Request):
+    @app.post("/api/v2/signup/request-code")
+    async def signup_request_code(request: Request):
         data = await request.json()
-        username = str(data.get("username","")).strip()
-        password = str(data.get("password",""))
-        tid = str(data.get("telegram_id","")).strip() or None
+        username = str(data.get("username", "")).strip()
+        password = str(data.get("password", ""))
+        tid = str(data.get("telegram_id", "")).strip()
         if not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", username):
-            raise HTTPException(400,"Login 3-40 belgi bo‘lsin")
+            raise HTTPException(400, "Login 3-40 belgi bo‘lsin")
         if len(password) < 10:
-            raise HTTPException(400,"Parol kamida 10 belgidan iborat bo‘lsin")
-        if tid and not tid.isdigit():
-            raise HTTPException(400,"Telegram ID faqat raqam")
+            raise HTTPException(400, "Parol kamida 10 belgidan iborat bo‘lsin")
+        if not re.fullmatch(r"[1-9][0-9]{4,15}", tid):
+            raise HTTPException(400, "Telegram ID noto‘g‘ri")
+        ip = (request.client.host if request.client else "unknown")[:80]
+        ts = now()
+        code = str(__import__("secrets").randbelow(900000) + 100000)
+        code_hash = hmac.new(os.getenv("SESSION_SECRET", "").encode(), (tid + ":" + code).encode(), "sha256").hexdigest()
         with db() as c:
-            if c.execute("SELECT 1 FROM admins WHERE username=?",(username,)).fetchone():
-                raise HTTPException(409,"Bu login band")
-            c.execute("INSERT INTO admins(username,password_hash,role,active,permissions,created_at,telegram_id) VALUES(?,?,?,?,?,?,?)",
-                      (username,pwd.hash(password),"user",1,json.dumps({"dashboard":True,"groups":True,"events":True}),now(),tid))
-            uid=c.execute("SELECT id FROM admins WHERE username=?",(username,)).fetchone()["id"]
-        request.session.clear(); request.session["uid"]=uid
-        audit(username,"REGISTER","Yangi web hisob yaratildi")
-        return {"id":uid,"username":username,"role":"user"}
+            if c.execute("SELECT 1 FROM admins WHERE username=?", (username,)).fetchone():
+                raise HTTPException(409, "Bu login band")
+            if c.execute("SELECT 1 FROM admins WHERE telegram_id=?", (tid,)).fetchone():
+                raise HTTPException(409, "Bu Telegram akkaunt boshqa hisobga ulangan")
+            recent_ip = c.execute("SELECT COUNT(*) n FROM signup_challenges WHERE ip=? AND created_at>?", (ip, ts-3600)).fetchone()["n"]
+            if recent_ip >= 10:
+                raise HTTPException(429, "Juda ko‘p urinish. Keyinroq qayta urinib ko‘ring")
+            row = c.execute("SELECT * FROM signup_challenges WHERE telegram_id=?", (tid,)).fetchone()
+            if row and int(row["resend_after"]) > ts:
+                raise HTTPException(429, "Yangi kod so‘rashdan oldin 60 soniya kuting")
+            c.execute("DELETE FROM signup_challenges WHERE telegram_id=?", (tid,))
+            c.execute("INSERT INTO signup_challenges(telegram_id,username,password_hash,code_hash,ip,created_at,expires_at,resend_after,attempts) VALUES(?,?,?,?,?,?,?,?,0)",
+                      (tid, username, pwd.hash(password), code_hash, ip, ts, ts+60, ts+60))
+            cur = c.execute("INSERT INTO signup_code_outbox(telegram_id,code,created_at,expires_at) VALUES(?,?,?,?)", (tid, code, ts, ts+60))
+        audit(username, "SIGNUP_CODE_REQUEST", "Telegram ID: "+tid)
+        return {"ok": True, "message": "Kod bot orqali yuborilmoqda. Botni avval ochib /start bosing.", "expires_in": 60}
+
+    @app.post("/api/v2/signup/verify")
+    async def signup_verify(request: Request):
+        data = await request.json()
+        tid = str(data.get("telegram_id", "")).strip()
+        code = str(data.get("code", "")).strip()
+        ts = now()
+        if not re.fullmatch(r"[1-9][0-9]{4,15}", tid) or not re.fullmatch(r"[0-9]{6}", code):
+            raise HTTPException(400, "Telegram ID yoki kod noto‘g‘ri")
+        digest = hmac.new(os.getenv("SESSION_SECRET", "").encode(), (tid + ":" + code).encode(), "sha256").hexdigest()
+        with db() as c:
+            row = c.execute("SELECT * FROM signup_challenges WHERE telegram_id=?", (tid,)).fetchone()
+            if not row or row["expires_at"] < ts:
+                c.execute("DELETE FROM signup_challenges WHERE telegram_id=?", (tid,))
+                raise HTTPException(400, "Kod eskirgan yoki so‘rov topilmadi")
+            if row["attempts"] >= 5:
+                c.execute("DELETE FROM signup_challenges WHERE telegram_id=?", (tid,))
+                raise HTTPException(429, "Urinishlar tugadi. Yangi kod so‘rang")
+            if not hmac.compare_digest(row["code_hash"], digest):
+                c.execute("UPDATE signup_challenges SET attempts=attempts+1 WHERE telegram_id=?", (tid,))
+                raise HTTPException(400, "Tasdiqlash kodi noto‘g‘ri")
+            if c.execute("SELECT 1 FROM admins WHERE telegram_id=? OR username=?", (tid, row["username"])).fetchone():
+                raise HTTPException(409, "Telegram ID yoki login allaqachon ishlatilgan")
+            cur = c.execute("INSERT INTO admins(username,password_hash,role,active,permissions,created_at,telegram_id) VALUES(?,?,?,?,?,?,?)",
+                (row["username"], row["password_hash"], "user", 1, json.dumps({"dashboard":True,"groups":True,"events":True}), ts, tid))
+            uid = cur.lastrowid
+            c.execute("DELETE FROM signup_challenges WHERE telegram_id=?", (tid,))
+            c.execute("DELETE FROM signup_code_outbox WHERE telegram_id=?", (tid,))
+        request.session.clear()
+        request.session["uid"] = uid
+        audit(row["username"], "REGISTER_VERIFIED", "Telegram ID: "+tid)
+        return {"id":uid,"username":row["username"],"role":"user"}
+
+    @app.get("/bridge/signup-codes")
+    async def bridge_signup_codes(request: Request):
+        check_bridge_secret(request)
+        ts = now()
+        with db() as c:
+            c.execute("DELETE FROM signup_code_outbox WHERE expires_at<?", (ts,))
+            rows = c.execute("SELECT id,telegram_id,code FROM signup_code_outbox WHERE status='queued' ORDER BY id LIMIT 10").fetchall()
+            if rows:
+                marks = ",".join("?" for _ in rows)
+                c.execute(f"UPDATE signup_code_outbox SET status='sending' WHERE id IN ({marks})", [r["id"] for r in rows])
+        return {"items":[{"id":r["id"],"telegram_id":r["telegram_id"],"code":r["code"]} for r in rows]}
+
+    @app.post("/bridge/signup-codes/{item_id}/result")
+    async def bridge_signup_code_result(item_id: int, request: Request):
+        check_bridge_secret(request)
+        data = await request.json()
+        status = str(data.get("status", "failed"))
+        if status not in {"sent", "failed"}:
+            raise HTTPException(400, "Status noto‘g‘ri")
+        with db() as c:
+            c.execute("UPDATE signup_code_outbox SET status=?,code='' WHERE id=?", (status, item_id))
+        return {"ok": True}
 
     @app.post("/api/v2/login")
     async def v2_login(request: Request):
