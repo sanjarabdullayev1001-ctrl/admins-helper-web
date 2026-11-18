@@ -275,7 +275,7 @@ async def home():
       <p class="logo">CYBER CONTROL SYSTEM</p>
       <h1>ADMINS HELPER</h1>
       <p>Guruhlar boshqaruvi, statistika va xavfsizlik nazorati uchun yagona platforma.</p>
-      <a class="btn" href="/admin-login">ADMIN PANEL →</a>
+      <a class="btn" href="/portal">WEB SERVERGA KIRISH →</a>
     </div>
     <div class="grid">
       <div class="card"><h2>Statistika</h2><p>Ulangan guruhlar va faollik ko‘rsatkichlari.</p></div>
