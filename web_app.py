@@ -76,7 +76,16 @@ def init_db():
             role TEXT NOT NULL DEFAULT 'admin',
             active INTEGER NOT NULL DEFAULT 1,
             permissions TEXT NOT NULL DEFAULT '{}',
-            created_at INTEGER NOT NULL
+            created_at INTEGER NOT NULL,
+            telegram_id TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS group_access (
+            telegram_id TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(telegram_id, chat_id)
         );
 
         CREATE TABLE IF NOT EXISTS groups_data (
@@ -110,6 +119,10 @@ def init_db():
             created_at INTEGER NOT NULL
         );
         """)
+
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(admins)").fetchall()}
+        if "telegram_id" not in cols:
+            c.execute("ALTER TABLE admins ADD COLUMN telegram_id TEXT")
 
         c.execute(
             "INSERT OR IGNORE INTO admins "
@@ -157,6 +170,22 @@ def require_login(request: Request):
         raise HTTPException(401, "Login talab qilinadi")
     return user
 
+
+def visible_chat_ids(user):
+    if user["role"] == "owner":
+        return None
+    tid = str(user.get("telegram_id") or "")
+    if not tid:
+        return []
+    with db() as c:
+        return [r["chat_id"] for r in c.execute(
+            "SELECT chat_id FROM group_access WHERE telegram_id=?", (tid,)
+        ).fetchall()]
+
+def require_group_access(user, chat_id):
+    ids = visible_chat_ids(user)
+    if ids is not None and str(chat_id) not in ids:
+        raise HTTPException(403, "Bu guruh sizga biriktirilmagan")
 
 def require_owner(request: Request):
     user = require_login(request)
@@ -341,23 +370,22 @@ async def dashboard(request: Request):
     if not can(user, "dashboard"):
         raise HTTPException(403, "Dashboard ruxsati yo‘q")
 
+    allowed_ids = visible_chat_ids(user)
     with db() as c:
-        groups = c.execute(
-            "SELECT COUNT(*) n FROM groups_data"
-        ).fetchone()["n"]
-
-        messages = c.execute(
-            "SELECT COUNT(*) n FROM bridge_events WHERE event_type='message'"
-        ).fetchone()["n"]
-
-        events = c.execute(
-            "SELECT COUNT(*) n FROM bridge_events"
-        ).fetchone()["n"]
-
-        recent = c.execute(
-            "SELECT event_type,chat_id,payload,created_at "
-            "FROM bridge_events ORDER BY created_at DESC LIMIT 15"
-        ).fetchall()
+        if allowed_ids is None:
+            groups = c.execute("SELECT COUNT(*) n FROM groups_data").fetchone()["n"]
+            messages = c.execute("SELECT COUNT(*) n FROM bridge_events WHERE event_type='message'").fetchone()["n"]
+            events = c.execute("SELECT COUNT(*) n FROM bridge_events").fetchone()["n"]
+            recent = c.execute("SELECT event_type,chat_id,payload,created_at FROM bridge_events ORDER BY created_at DESC LIMIT 15").fetchall()
+        elif not allowed_ids:
+            groups = messages = events = 0
+            recent = []
+        else:
+            marks = ",".join("?" for _ in allowed_ids)
+            groups = len(allowed_ids)
+            messages = c.execute(f"SELECT COUNT(*) n FROM bridge_events WHERE event_type='message' AND chat_id IN ({marks})", allowed_ids).fetchone()["n"]
+            events = c.execute(f"SELECT COUNT(*) n FROM bridge_events WHERE chat_id IN ({marks})", allowed_ids).fetchone()["n"]
+            recent = c.execute(f"SELECT event_type,chat_id,payload,created_at FROM bridge_events WHERE chat_id IN ({marks}) ORDER BY created_at DESC LIMIT 15", allowed_ids).fetchall()
 
     rows = ""
     for e in recent:
@@ -405,10 +433,15 @@ async def groups_page(request: Request):
     if not can(user, "groups"):
         raise HTTPException(403, "Guruhlar ruxsati yo‘q")
 
+    allowed_ids = visible_chat_ids(user)
     with db() as c:
-        groups = c.execute(
-            "SELECT * FROM groups_data ORDER BY updated_at DESC"
-        ).fetchall()
+        if allowed_ids is None:
+            groups = c.execute("SELECT * FROM groups_data ORDER BY updated_at DESC").fetchall()
+        elif allowed_ids:
+            marks = ",".join("?" for _ in allowed_ids)
+            groups = c.execute(f"SELECT * FROM groups_data WHERE chat_id IN ({marks}) ORDER BY updated_at DESC", allowed_ids).fetchall()
+        else:
+            groups = []
 
     rows = ""
     for g in groups:
@@ -436,6 +469,7 @@ async def group_detail(chat_id: str, request: Request):
     if not can(user, "groups"):
         raise HTTPException(403, "Ruxsat yo‘q")
 
+    require_group_access(user, chat_id)
     with db() as c:
         group = c.execute(
             "SELECT * FROM groups_data WHERE chat_id=?",
@@ -482,10 +516,15 @@ async def events_page(request: Request):
     if not can(user, "events"):
         raise HTTPException(403, "Hodisalar ruxsati yo‘q")
 
+    allowed_ids = visible_chat_ids(user)
     with db() as c:
-        events = c.execute(
-            "SELECT * FROM bridge_events ORDER BY created_at DESC LIMIT 200"
-        ).fetchall()
+        if allowed_ids is None:
+            events = c.execute("SELECT * FROM bridge_events ORDER BY created_at DESC LIMIT 200").fetchall()
+        elif allowed_ids:
+            marks = ",".join("?" for _ in allowed_ids)
+            events = c.execute(f"SELECT * FROM bridge_events WHERE chat_id IN ({marks}) ORDER BY created_at DESC LIMIT 200", allowed_ids).fetchall()
+        else:
+            events = []
 
     rows = ""
     for e in events:
@@ -533,6 +572,8 @@ async def admins_page(request: Request):
       <form method="post" action="/api/admins/create">
         <label>Yangi admin login</label>
         <input name="username" required maxlength="40" pattern="[A-Za-z0-9_.-]+">
+        <label>Telegram ID (ixtiyoriy, guruhlarni bog‘lash uchun)</label>
+        <input name="telegram_id" inputmode="numeric" pattern="[0-9]{5,20}">
         <label>Yangi admin parol</label>
         <input name="password" type="password" required minlength="10" maxlength="200">
         <button class="btn">ADMIN QO‘SHISH</button>
@@ -549,6 +590,9 @@ async def create_admin(request: Request):
 
     username = str(form.get("username", "")).strip()
     password = str(form.get("password", ""))
+    telegram_id = str(form.get("telegram_id", "")).strip() or None
+    if telegram_id and not telegram_id.isdigit():
+        raise HTTPException(400, "Telegram ID faqat raqam bo‘lishi kerak")
 
     if not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", username):
         raise HTTPException(400, "Login formati noto‘g‘ri")
@@ -558,15 +602,16 @@ async def create_admin(request: Request):
 
     with db() as c:
         c.execute(
-            "INSERT INTO admins(username,password_hash,role,active,permissions,created_at) "
-            "VALUES(?,?,?,?,?,?)",
+            "INSERT INTO admins(username,password_hash,role,active,permissions,created_at,telegram_id) "
+            "VALUES(?,?,?,?,?,?,?)",
             (
                 username,
                 pwd.hash(password),
                 "admin",
                 1,
                 json.dumps({"dashboard": True, "groups": True, "events": True}),
-                now()
+                now(),
+                telegram_id
             )
         )
 
@@ -629,7 +674,7 @@ async def receive_bridge_event(request: Request):
 
     event_type = payload.get("type")
 
-    if event_type not in {"access", "group", "message", "member"}:
+    if event_type not in {"access", "group", "message", "member", "group_access", "security", "application", "audit"}:
         raise HTTPException(400, "Event turi noto‘g‘ri")
 
     chat_id = str(
@@ -658,6 +703,13 @@ async def receive_bridge_event(request: Request):
                 created
             )
         )
+
+        if event_type == "group_access":
+            telegram_id = str(payload.get("user_id") or "")
+            role = str(payload.get("role") or "member")[:30]
+            if telegram_id.isdigit() and chat_id:
+                c.execute("INSERT INTO group_access(telegram_id,chat_id,role,updated_at) VALUES(?,?,?,?) ON CONFLICT(telegram_id,chat_id) DO UPDATE SET role=excluded.role,updated_at=excluded.updated_at",
+                          (telegram_id, chat_id, role, created))
 
         if event_type == "group":
             title = str(
