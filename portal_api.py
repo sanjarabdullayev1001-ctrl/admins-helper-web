@@ -221,17 +221,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
             c.execute("UPDATE admins SET active=? WHERE id=?",(active,admin_id))
         audit(u["username"],"ADMIN_STATUS",str(admin_id)+":"+str(active)); return {"ok":True}
 
-    @app.get("/api/v2/chat")
-    async def v2_chat(request:Request):
-        u=require_login(request); ids=visible(u)
-        if ids is None: ids=[]
-        with db() as c:
-            if ids:
-                marks=",".join("?" for _ in ids); rows=c.execute(f"SELECT * FROM web_outgoing WHERE chat_id IN ({marks}) ORDER BY id DESC LIMIT 100",ids).fetchall()
-            else: rows=[]
-        return {"groups":[],"items":[dict(r) for r in rows]}
-
-    def check_bridge_secret(request: Request):
+        def check_bridge_secret(request: Request):
         supplied = request.headers.get('x-bridge-secret', '')
         expected = os.getenv('BRIDGE_SECRET', '')
         if not expected or not hmac.compare_digest(supplied, expected):
