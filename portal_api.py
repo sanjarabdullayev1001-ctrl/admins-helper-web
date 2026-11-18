@@ -79,28 +79,33 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         if not re.fullmatch(r"[1-9][0-9]{4,15}", tid) or not re.fullmatch(r"[0-9]{6}", code):
             raise HTTPException(400, "Telegram ID yoki kod noto‘g‘ri")
         digest = hmac.new(os.getenv("SESSION_SECRET", "").encode(), (tid + ":" + code).encode(), "sha256").hexdigest()
+        failure = None
+        created = None
         with db() as c:
             row = c.execute("SELECT * FROM signup_challenges WHERE telegram_id=?", (tid,)).fetchone()
             if not row or row["expires_at"] < ts:
                 c.execute("DELETE FROM signup_challenges WHERE telegram_id=?", (tid,))
-                raise HTTPException(400, "Kod eskirgan yoki so‘rov topilmadi")
-            if row["attempts"] >= 5:
+                failure = (400, "Kod eskirgan yoki so‘rov topilmadi")
+            elif row["attempts"] >= 5:
                 c.execute("DELETE FROM signup_challenges WHERE telegram_id=?", (tid,))
-                raise HTTPException(429, "Urinishlar tugadi. Yangi kod so‘rang")
-            if not hmac.compare_digest(row["code_hash"], digest):
+                failure = (429, "Urinishlar tugadi. Yangi kod so‘rang")
+            elif not hmac.compare_digest(row["code_hash"], digest):
                 c.execute("UPDATE signup_challenges SET attempts=attempts+1 WHERE telegram_id=?", (tid,))
-                raise HTTPException(400, "Tasdiqlash kodi noto‘g‘ri")
-            if c.execute("SELECT 1 FROM admins WHERE telegram_id=? OR username=?", (tid, row["username"])).fetchone():
-                raise HTTPException(409, "Telegram ID yoki login allaqachon ishlatilgan")
-            cur = c.execute("INSERT INTO admins(username,password_hash,role,active,permissions,created_at,telegram_id) VALUES(?,?,?,?,?,?,?)",
-                (row["username"], row["password_hash"], "user", 1, json.dumps({"dashboard":True,"groups":True,"events":True}), ts, tid))
-            uid = cur.lastrowid
-            c.execute("DELETE FROM signup_challenges WHERE telegram_id=?", (tid,))
-            c.execute("DELETE FROM signup_code_outbox WHERE telegram_id=?", (tid,))
+                failure = (400, "Tasdiqlash kodi noto‘g‘ri")
+            elif c.execute("SELECT 1 FROM admins WHERE telegram_id=? OR username=?", (tid, row["username"])).fetchone():
+                failure = (409, "Telegram ID yoki login allaqachon ishlatilgan")
+            else:
+                cur = c.execute("INSERT INTO admins(username,password_hash,role,active,permissions,created_at,telegram_id) VALUES(?,?,?,?,?,?,?)",
+                    (row["username"], row["password_hash"], "user", 1, json.dumps({"dashboard":True,"groups":True,"events":True}), ts, tid))
+                created = {"id":cur.lastrowid,"username":row["username"],"role":"user"}
+                c.execute("DELETE FROM signup_challenges WHERE telegram_id=?", (tid,))
+                c.execute("DELETE FROM signup_code_outbox WHERE telegram_id=?", (tid,))
+        if failure:
+            raise HTTPException(failure[0], failure[1])
         request.session.clear()
-        request.session["uid"] = uid
-        audit(row["username"], "REGISTER_VERIFIED", "Telegram ID: "+tid)
-        return {"id":uid,"username":row["username"],"role":"user"}
+        request.session["uid"] = created["id"]
+        audit(created["username"], "REGISTER_VERIFIED", "Telegram ID: "+tid)
+        return created
 
     @app.get("/bridge/signup-codes")
     async def bridge_signup_codes(request: Request):
