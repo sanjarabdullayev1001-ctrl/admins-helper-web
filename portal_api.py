@@ -221,7 +221,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
             c.execute("UPDATE admins SET active=? WHERE id=?",(active,admin_id))
         audit(u["username"],"ADMIN_STATUS",str(admin_id)+":"+str(active)); return {"ok":True}
 
-        def check_bridge_secret(request: Request):
+    def check_bridge_secret(request: Request):
         supplied = request.headers.get('x-bridge-secret', '')
         expected = os.getenv('BRIDGE_SECRET', '')
         if not expected or not hmac.compare_digest(supplied, expected):
