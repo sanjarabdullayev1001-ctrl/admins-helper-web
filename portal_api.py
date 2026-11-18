@@ -136,21 +136,28 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         data=await request.json()
         username=str(data.get("username","")).strip()
         password=str(data.get("password",""))
-        ip = (request.client.host if request.client else "unknown")[:80]
+        ip=(request.client.host if request.client else "unknown")[:80]
+        failure=None
+        user=None
         with db() as c:
             u=c.execute("SELECT * FROM admins WHERE username=?",(username,)).fetchone()
-            if not u or not pwd.verify(password,u["password_hash"]):
+            if not u or not pwd.verify(password,u["password_hash"] if u else ""):
                 c.execute("INSERT INTO portal_security_events(username,event,ip,details,created_at) VALUES(?,?,?,?,?)",(username,"LOGIN_FAILED",ip,"Login yoki parol noto‘g‘ri",now()))
-                raise HTTPException(401,"Login yoki parol noto‘g‘ri")
-            tid=str(u["telegram_id"] or "")
-            blocked=bool(tid and c.execute("SELECT 1 FROM web_blacklist WHERE telegram_id=?",(tid,)).fetchone())
-            if not u["active"] or blocked:
-                return JSONResponse({"blocked":True,"detail":"ACCOUNT BLOCKED"},status_code=403)
-        with db() as c:
-            c.execute("INSERT INTO portal_security_events(username,telegram_id,event,ip,details,created_at) VALUES(?,?,?,?,?,?)",(username,str(u["telegram_id"] or ""),"LOGIN_SUCCESS",ip,"Muvaffaqiyatli kirish",now()))
-        request.session.clear(); request.session["uid"]=u["id"]
+                failure=(401,"Login yoki parol noto‘g‘ri")
+            else:
+                tid=str(u["telegram_id"] or "")
+                blocked=bool(tid and c.execute("SELECT 1 FROM web_blacklist WHERE telegram_id=?",(tid,)).fetchone())
+                if not u["active"] or blocked:
+                    failure=(403,"ACCOUNT BLOCKED")
+                else:
+                    user=dict(u)
+                    c.execute("INSERT INTO portal_security_events(username,telegram_id,event,ip,details,created_at) VALUES(?,?,?,?,?,?)",(username,tid,"LOGIN_SUCCESS",ip,"Muvaffaqiyatli kirish",now()))
+        if failure:
+            raise HTTPException(failure[0],failure[1])
+        request.session.clear()
+        request.session["uid"]=user["id"]
         audit(username,"LOGIN","Portalga kirdi")
-        return {"id":u["id"],"username":u["username"],"role":u["role"]}
+        return {"id":user["id"],"username":user["username"],"role":user["role"]}
 
     @app.get("/api/v2/me")
     async def v2_me(request: Request):
