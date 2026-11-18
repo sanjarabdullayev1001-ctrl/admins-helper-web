@@ -285,7 +285,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
             ids = [r['id'] for r in rows]
             if ids:
                 marks = ','.join('?' for _ in ids)
-                c.execute(f"UPDATE web_outgoing SET status='sending' WHERE id IN ({marks})", ids)
+                c.execute(f"UPDATE web_outgoing SET status='sending',created_at=? WHERE id IN ({marks})", [now(), *ids])
         return {'items':[{'id':r['id'],'chat_id':r['chat_id'],'text':r['text'],'media_type':r['media_type'],'media_name':r['media_name']} for r in rows]}
 
     @app.get('/bridge/media/{item_id}')
