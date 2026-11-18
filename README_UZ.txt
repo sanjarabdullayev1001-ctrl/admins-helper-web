@@ -1,53 +1,41 @@
-ADMINS HELPER — YANGI ALOHIDA WEB SAYT (1-BOSQICH)
+ADMINS HELPER — MUSTAQIL WEB SERVER
+
+Bu loyiha Telegram Mini App emas. Oddiy brauzer orqali ochiladigan mustaqil web-server.
 
 FAYLLAR
-- web_app.py       yangi brauzer sayti va admin login tizimi
-- db_backend.py    mavjud loyiha SQLite/PostgreSQL adapteri
-- requirements_web.txt  kerakli kutubxonalar
+- web_app.py: FastAPI server, session login va bridge endpoint
+- portal.html: brauzer boshqaruv paneli
+- portal_api.py: ro'yxatdan o'tish, login, guruhlar, hodisalar, arizalar, qora ro'yxat va admin API
+- db_backend.py: eski Mini App DB adapteri (alohida modul, hozir portal API unga tayanmaydi)
 
-MUHIM
-Bu yangi alohida web servis. Hozirgi Render bot/Mini App o‘zgartirilmaydi.
-Bu versiyada brauzer login, Owner paneli, admin yaratish/o‘chirish/faolsizlantirish,
-admin ruxsatlari, cyber sozlamalar va 18+ GUARD tekshiruv navbati mavjud.
-Telegram guruhlariga avtomatik ban, profil rasmini AI bilan ko‘rish va kanalni
-tekshirish hali bot integratsiyasi qilinmagan — tugmalar hozircha sozlamalarni saqlaydi.
+RENDER
+Build Command:
+pip install -r requirements_web.txt
 
-ENVIRONMENT VARIABLES (Render Environment yoki hosting panelida)
-OWNER_ID=hozirgi Telegram Owner ID raqami
-SESSION_SECRET=kamida 32 belgili tasodifiy maxfiy kalit
-WEB_OWNER_USERNAME=owner (ixtiyoriy, standart: owner)
-WEB_OWNER_PASSWORD=kamida 12 belgili yangi kuchli parol
-COOKIE_SECURE=true
-MINIAPP_DB=miniapp.db (SQLite ishlatilsa)
-DATABASE_URL=PostgreSQL ulanish manzili (PostgreSQL ishlatilsa, MINIAPP_DB kerak emas)
+Start Command:
+uvicorn web_app:app --host 0.0.0.0 --port $PORT
 
-Eslatma: WEB_OWNER_PASSWORD ni hech kimga chatda yubormang. Uni faqat hostingning
-Environment Variables bo‘limiga o‘zingiz kiriting. Eski BOT_TOKEN va BRIDGE_SECRET
-qiymatlarini bu yangi servisga ko‘chirish hozircha shart emas.
+Kerakli Environment Variables:
+SESSION_SECRET = kamida 32 belgili tasodifiy maxfiy qiymat
+WEB_OWNER_USERNAME = owner (ixtiyoriy)
+WEB_OWNER_PASSWORD = kuchli, kamida 12 belgili parol
+BRIDGE_SECRET = bot bilan bridge uchun botdagi aynan bir xil maxfiy qiymat
+WEB_DB_PATH = persistent diskdagi SQLite yo'li (yoki Render PostgreSQL adapteri keyingi bosqichda)
 
-LOCAL TEST (Windows CMD)
-1) Python 3.11+ o‘rnating.
-2) Shu papkada CMD oching.
-3) Buyruqlar:
-   py -m venv venv
-   venv\Scripts\activate
-   py -m pip install -r requirements_web.txt
-   set OWNER_ID=TELEGRAM_OWNER_ID
-   set SESSION_SECRET=32_BELGIDAN_UZUN_TASODIFIY_KALIT
-   set WEB_OWNER_PASSWORD=12_BELGIDAN_UZUN_KUCHLI_PAROL
-   set COOKIE_SECURE=false
-   py -m uvicorn web_app:app --host 127.0.0.1 --port 8000
-4) Brauzerda http://127.0.0.1:8000 ni oching.
-5) Login: WEB_OWNER_USERNAME (standart owner), parol: WEB_OWNER_PASSWORD.
+Portal:
+https://admins-helper-miniapp.onrender.com/portal
 
-RENDER UCHUN
-Alohida yangi Web Service yarating. Eski service'ni o‘chirmang va unga deploy qilmang.
-Build Command: pip install -r requirements_web.txt
-Start Command: uvicorn web_app:app --host 0.0.0.0 --port $PORT
-Environment Variables yuqoridagi ro‘yxatdan kiriting; COOKIE_SECURE=true qolsin.
-Ma’lumotlar yo‘qolmasligi uchun PostgreSQL DATABASE_URL tavsiya qilinadi.
+Asosiy sahifa / portalga yo'naltiruvchi tugma beradi.
 
-SINOV HOLATI
-Python syntax, JS syntax, Owner login, dashboard, admin yaratish va himoya sozlamalari
-lokal testda tekshirildi. Productionga chiqarishdan oldin yangi alohida servisda
-HTTPS, PostgreSQL va mavjud bot bilan bridge integratsiyasi alohida sinovdan o‘tkazilsin.
+MUHIM XAVFSIZLIK
+- Har bir yangi foydalanuvchi login/parol bilan ro'yxatdan o'tadi.
+- Telegram ID ko'rsatilsa, bot bridge guruhdagi adminligini tasdiqlaganidan keyin guruhlar ko'rinadi.
+- Foydalanuvchilar faqat group_access orqali o'zlariga biriktirilgan guruhlarni ko'radi.
+- Owner barcha guruhlar va adminlarni boshqaradi.
+- Qora ro'yxat web hisobiga kirishni to'sadi; Telegram guruhidan ban qilishni o'zi bajarmaydi.
+- Web chat hozircha ko'rish/bo'lim interfeysi. Botdan haqiqiy xabar, rasm, GIF, sticker yoki ovoz yuborish uchun bot-serverda alohida outbound command worker va media relay qo'shilishi shart.
+- 18+ profil aniqlash/ban qilish, fake-adminni avtomatik olib tashlash va Telegram join request'ni tasdiqlash hozircha real bajariladigan funksiyalar emas; ular faqat botning tasdiqlangan eventlari kelganda tarixda ko'rinishi mumkin.
+- Bot event bridge guruh/xabar/member/group_access hodisalarini qabul qiladi. Botdagi BRIDGE_SECRET va MINIAPP_URL sozlamalari to'g'ri bo'lishi shart.
+- WEB_DB_PATH uchun doimiy disk ishlating, aks holda deploy paytida SQLite ma'lumotlari yo'qolishi mumkin.
+
+Bu versiya mustaqil web server asosini va boshqaruv API'larini qo'shadi. Productionga chiqarishdan oldin Render deploy, database persistence, CSRF/rate-limit va bot outbound integratsiyasini alohida tekshirish talab qilinadi.
