@@ -749,3 +749,8 @@ async def health():
     return {"ok": True, "service": "admins-helper-web"}
 
 
+
+
+# Standalone browser portal (not a Telegram Mini App)
+from portal_api import install as _install_portal
+_install_portal(app, db, pwd, audit, now, require_login, require_owner, visible_chat_ids, require_group_access)
