@@ -166,6 +166,27 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         audit(username,"LOGIN","Portalga kirdi")
         return {"id":user["id"],"username":user["username"],"role":user["role"]}
 
+    @app.get("/api/v2/profile")
+    async def v2_profile(request: Request):
+        u=require_login(request)
+        tid=str(u.get("telegram_id") or "")
+        with db() as c:
+            access=c.execute("SELECT COUNT(*) n FROM group_access WHERE telegram_id=? AND LOWER(role) IN ('creator','administrator','admin','owner')",(tid,)).fetchone()["n"] if tid else 0
+            blocked=bool(tid and c.execute("SELECT 1 FROM web_blacklist WHERE telegram_id=?",(tid,)).fetchone())
+        return {"username":u["username"],"role":u["role"],"telegram_id":tid,"telegram_linked":bool(tid),"group_admin_count":access,"blocked":blocked,"age_status":"not_verified","age_note":"Telegram profilidan tug‘ilgan sana yoki yosh ishonchli olinmaydi; 18+ holati tasdiqlangan deb ko‘rsatilmaydi."}
+
+    @app.post("/api/v2/account/unlink")
+    async def v2_unlink_account(request: Request):
+        u=require_login(request)
+        if u["role"]=="owner":
+            raise HTTPException(400,"Owner akkauntini bu yerdan uzib bo‘lmaydi")
+        with db() as c:
+            c.execute("UPDATE admins SET telegram_id=NULL WHERE id=?",(u["id"],))
+            c.execute("DELETE FROM group_access WHERE telegram_id=?",(str(u.get("telegram_id") or ""),))
+        audit(u["username"],"TELEGRAM_ACCOUNT_UNLINK","Telegram ID uzildi")
+        request.session.clear()
+        return {"ok":True}
+
     @app.get("/api/v2/me")
     async def v2_me(request: Request):
         u=require_login(request)
