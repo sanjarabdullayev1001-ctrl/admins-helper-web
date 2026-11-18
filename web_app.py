@@ -179,7 +179,7 @@ def visible_chat_ids(user):
         return []
     with db() as c:
         return [r["chat_id"] for r in c.execute(
-            "SELECT chat_id FROM group_access WHERE telegram_id=?", (tid,)
+            "SELECT chat_id FROM group_access WHERE telegram_id=? AND LOWER(role) IN ('creator','administrator','admin','owner')", (tid,)
         ).fetchall()]
 
 def require_group_access(user, chat_id):
