@@ -554,7 +554,7 @@ async def admins_page(request: Request):
 
     with db() as c:
         admins = c.execute(
-            "SELECT id,username,role,active,created_at FROM admins ORDER BY id"
+            "SELECT id,username,role,active,created_at,telegram_id FROM admins ORDER BY id"
         ).fetchall()
 
     rows = ""
@@ -562,7 +562,7 @@ async def admins_page(request: Request):
         rows += (
             f"<tr><td>{a['username']}</td><td>{a['role']}</td>"
             f"<td>{'Faol' if a['active'] else 'O‘chirilgan'}</td>"
-            f"<td>{a['id']}</td></tr>"
+            f"<td>{a['id']}</td><td>{a['telegram_id'] or '—'}</td></tr>"
         )
 
     return page("Adminlar", f"""
@@ -578,7 +578,7 @@ async def admins_page(request: Request):
         <input name="password" type="password" required minlength="10" maxlength="200">
         <button class="btn">ADMIN QO‘SHISH</button>
       </form>
-      <table><tr><th>Login</th><th>Rol</th><th>Holat</th><th>ID</th></tr>{rows}</table>
+      <table><tr><th>Login</th><th>Rol</th><th>Holat</th><th>ID</th><th>Telegram ID</th></tr>{rows}</table>
     </div>
     """)
 
