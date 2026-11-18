@@ -2,7 +2,8 @@ import json, os, re, time, html
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+import hmac
 
 def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat_ids, require_group_access):
     import sqlite3
@@ -10,10 +11,15 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         c.executescript("""
         CREATE TABLE IF NOT EXISTS web_blacklist(telegram_id TEXT PRIMARY KEY, reason TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS web_applications(id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, actor TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', payload TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS web_outgoing(id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', created_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS web_outgoing(id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', created_at INTEGER NOT NULL, media_type TEXT NOT NULL DEFAULT '', media_name TEXT NOT NULL DEFAULT '', media_data BLOB, result TEXT NOT NULL DEFAULT '');
         CREATE INDEX IF NOT EXISTS web_events_chat_time ON bridge_events(chat_id,created_at);
         """)
 
+    with db() as c:
+        cols = {r['name'] for r in c.execute('PRAGMA table_info(web_outgoing)').fetchall()}
+        for name, definition in (('media_type', "TEXT NOT NULL DEFAULT ''"), ('media_name', "TEXT NOT NULL DEFAULT ''"), ('media_data', 'BLOB'), ('result', "TEXT NOT NULL DEFAULT ''")):
+            if name not in cols:
+                c.execute(f'ALTER TABLE web_outgoing ADD COLUMN {name} {definition}')
     def stamp(ts):
         return datetime.fromtimestamp(int(ts), timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -224,3 +230,91 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
                 marks=",".join("?" for _ in ids); rows=c.execute(f"SELECT * FROM web_outgoing WHERE chat_id IN ({marks}) ORDER BY id DESC LIMIT 100",ids).fetchall()
             else: rows=[]
         return {"groups":[],"items":[dict(r) for r in rows]}
+
+    def check_bridge_secret(request: Request):
+        supplied = request.headers.get('x-bridge-secret', '')
+        expected = os.getenv('BRIDGE_SECRET', '')
+        if not expected or not hmac.compare_digest(supplied, expected):
+            raise HTTPException(403, 'Bridge ruxsati yo‘q')
+
+    @app.post('/api/v2/chat/send')
+    async def v2_chat_send(request: Request):
+        u = require_login(request)
+        form = await request.form()
+        chat_id = str(form.get('chat_id', '')).strip()
+        message_text = str(form.get('text', '')).strip()
+        media_type = str(form.get('media_type', '')).strip().lower()
+        upload = form.get('file')
+        require_group_access(u, chat_id)
+        with db() as c:
+            group = c.execute('SELECT chat_id FROM groups_data WHERE chat_id=?', (chat_id,)).fetchone()
+        if not group:
+            raise HTTPException(404, 'Guruh topilmadi yoki bot bu guruhda yo‘q')
+        media_data = None
+        media_name = ''
+        if upload and getattr(upload, 'filename', ''):
+            media_name = os.path.basename(upload.filename)[:180]
+            media_data = await upload.read()
+            if len(media_data) > 20 * 1024 * 1024:
+                raise HTTPException(413, 'Fayl 20 MB dan kichik bo‘lishi kerak')
+            if media_type not in {'photo','video','voice','audio','animation','sticker','document'}:
+                raise HTTPException(400, 'Media turi noto‘g‘ri')
+        else:
+            media_type = ''
+        if not message_text and not media_data:
+            raise HTTPException(400, 'Xabar matni yoki fayl tanlang')
+        if len(message_text) > (1024 if media_data else 4096):
+            raise HTTPException(400, 'Xabar matni juda uzun')
+        with db() as c:
+            cur = c.execute("INSERT INTO web_outgoing(chat_id,sender,text,status,created_at,media_type,media_name,media_data) VALUES(?,?,?,'queued',?,?,?,?)", (chat_id,u['username'],message_text,now(),media_type,media_name,media_data))
+            item_id = cur.lastrowid
+        audit(u['username'], 'BOT_GROUP_MESSAGE_QUEUED', f'{chat_id}:{item_id}:{media_type}')
+        return {'ok':True,'id':item_id,'status':'queued'}
+
+    @app.get('/api/v2/chat')
+    async def v2_chat(request: Request):
+        u = require_login(request)
+        ids = visible(u)
+        with db() as c:
+            if ids is None:
+                groups = c.execute('SELECT chat_id,title,members FROM groups_data ORDER BY title COLLATE NOCASE').fetchall()
+                rows = c.execute('SELECT id,chat_id,sender,text,status,created_at,media_type,result FROM web_outgoing ORDER BY id DESC LIMIT 100').fetchall()
+            elif ids:
+                marks = ','.join('?' for _ in ids)
+                groups = c.execute(f'SELECT chat_id,title,members FROM groups_data WHERE chat_id IN ({marks}) ORDER BY title COLLATE NOCASE', ids).fetchall()
+                rows = c.execute(f'SELECT id,chat_id,sender,text,status,created_at,media_type,result FROM web_outgoing WHERE chat_id IN ({marks}) ORDER BY id DESC LIMIT 100', ids).fetchall()
+            else:
+                groups, rows = [], []
+        return {'groups':[{'chat_id':r['chat_id'],'title':r['title'],'members':r['members']} for r in groups], 'items':[{'id':r['id'],'chat_id':r['chat_id'],'sender':r['sender'],'text':r['text'],'status':r['status'],'time':stamp(r['created_at']),'media_type':r['media_type'],'result':r['result']} for r in rows]}
+
+    @app.get('/bridge/outgoing')
+    async def bridge_outgoing(request: Request):
+        check_bridge_secret(request)
+        with db() as c:
+            rows = c.execute("SELECT id,chat_id,text,media_type,media_name FROM web_outgoing WHERE status='queued' OR (status='sending' AND created_at<?) ORDER BY id LIMIT 10", (now()-120,)).fetchall()
+            ids = [r['id'] for r in rows]
+            if ids:
+                marks = ','.join('?' for _ in ids)
+                c.execute(f"UPDATE web_outgoing SET status='sending' WHERE id IN ({marks})", ids)
+        return {'items':[{'id':r['id'],'chat_id':r['chat_id'],'text':r['text'],'media_type':r['media_type'],'media_name':r['media_name']} for r in rows]}
+
+    @app.get('/bridge/media/{item_id}')
+    async def bridge_media(item_id: int, request: Request):
+        check_bridge_secret(request)
+        with db() as c:
+            row = c.execute('SELECT media_data,media_name,media_type FROM web_outgoing WHERE id=?',(item_id,)).fetchone()
+        if not row or row['media_data'] is None:
+            raise HTTPException(404,'Media topilmadi')
+        mime = {'photo':'image/jpeg','video':'video/mp4','voice':'audio/ogg','audio':'audio/mpeg','animation':'video/mp4','sticker':'image/webp','document':'application/octet-stream'}.get(row['media_type'],'application/octet-stream')
+        return Response(content=bytes(row['media_data']), media_type=mime)
+
+    @app.post('/bridge/outgoing/{item_id}/result')
+    async def bridge_outgoing_result(item_id: int, request: Request):
+        check_bridge_secret(request)
+        data = await request.json()
+        status = str(data.get('status','failed'))
+        if status not in {'sent','failed'}:
+            raise HTTPException(400,'Status noto‘g‘ri')
+        with db() as c:
+            c.execute('UPDATE web_outgoing SET status=?,result=? WHERE id=?',(status,str(data.get('result',''))[:500],item_id))
+        return {'ok':True}
