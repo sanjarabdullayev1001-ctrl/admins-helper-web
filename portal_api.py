@@ -108,6 +108,13 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         audit(created["username"], "REGISTER_VERIFIED", "Telegram ID: "+tid)
         return created
 
+    @app.get("/bridge/linked-users")
+    async def bridge_linked_users(request: Request):
+        check_bridge_secret(request)
+        with db() as c:
+            rows = c.execute("SELECT telegram_id FROM admins WHERE active=1 AND telegram_id IS NOT NULL AND telegram_id!='' AND role!='owner' ORDER BY id LIMIT 500").fetchall()
+        return {"users":[str(r["telegram_id"]) for r in rows]}
+
     @app.get("/bridge/signup-codes")
     async def bridge_signup_codes(request: Request):
         check_bridge_secret(request)
