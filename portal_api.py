@@ -399,7 +399,21 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
                 rows = c.execute(f'SELECT id,chat_id,sender,text,status,created_at,media_type,result FROM web_outgoing WHERE chat_id IN ({marks}) ORDER BY id DESC LIMIT 100', ids).fetchall()
             else:
                 groups, rows = [], []
-        return {'groups':[{'chat_id':r['chat_id'],'title':r['title'],'members':r['members']} for r in groups], 'items':[{'id':r['id'],'chat_id':r['chat_id'],'sender':r['sender'],'text':r['text'],'status':r['status'],'time':stamp(r['created_at']),'media_type':r['media_type'],'result':r['result']} for r in rows]}
+        if ids is None:
+            incoming = c.execute("SELECT event_id,chat_id,payload,created_at FROM bridge_events WHERE event_type='message' ORDER BY created_at DESC LIMIT 300").fetchall()
+        elif ids:
+            marks = ','.join('?' for _ in ids)
+            incoming = c.execute(f"SELECT event_id,chat_id,payload,created_at FROM bridge_events WHERE event_type='message' AND chat_id IN ({marks}) ORDER BY created_at DESC LIMIT 300", ids).fetchall()
+        else:
+            incoming = []
+        messages = []
+        for r in reversed(incoming):
+            try:
+                p = json.loads(r['payload'])
+            except Exception:
+                p = {}
+            messages.append({'id':r['event_id'],'chat_id':r['chat_id'],'sender':str(p.get('sender') or 'Telegram foydalanuvchisi'),'sender_id':str(p.get('sender_id') or ''),'text':str(p.get('text') or ''),'time':stamp(r['created_at']),'direction':'incoming'})
+        return {'groups':[{'chat_id':r['chat_id'],'title':r['title'],'members':r['members']} for r in groups], 'items':[{'id':r['id'],'chat_id':r['chat_id'],'sender':r['sender'],'text':r['text'],'status':r['status'],'time':stamp(r['created_at']),'media_type':r['media_type'],'result':r['result'],'direction':'outgoing'} for r in rows], 'messages':messages}
 
     @app.get('/bridge/outgoing')
     async def bridge_outgoing(request: Request):
