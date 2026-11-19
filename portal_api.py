@@ -200,7 +200,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         with db() as c:
             c.execute("DELETE FROM portal_qr_links WHERE expires_at<? OR status!='pending'", (created,))
             c.execute("INSERT INTO portal_qr_links(token,admin_id,expires_at,status) VALUES(?,?,?,'pending')", (token, int(u["id"]), created + 180))
-        return {"token": token, "url": "https://t.me/SanjarHelperBot?start=qr_" + token, "expires_in": 180}
+        return {"token": token, "url": "https://t.me/GROUP_HEPLER_ADMINSBOT?start=qr_" + token, "expires_in": 180}
 
     @app.get("/api/v2/account/qr/{token}")
     async def v2_account_qr_status(token: str, request: Request):
