@@ -16,6 +16,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         CREATE INDEX IF NOT EXISTS web_events_chat_time ON bridge_events(chat_id,created_at);
         CREATE TABLE IF NOT EXISTS signup_challenges(telegram_id TEXT PRIMARY KEY,username TEXT NOT NULL,password_hash TEXT NOT NULL,code_hash TEXT NOT NULL,ip TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,resend_after INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS signup_code_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT,telegram_id TEXT NOT NULL,code TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'queued');
+        CREATE TABLE IF NOT EXISTS portal_qr_links(token TEXT PRIMARY KEY,admin_id INTEGER NOT NULL,telegram_id TEXT NOT NULL DEFAULT '',expires_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'pending');
         CREATE TABLE IF NOT EXISTS portal_security_events(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT NOT NULL,telegram_id TEXT NOT NULL DEFAULT '',event TEXT NOT NULL,ip TEXT NOT NULL DEFAULT '',details TEXT NOT NULL DEFAULT '',created_at INTEGER NOT NULL);
         """)
 
@@ -187,6 +188,36 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         audit(u["username"],"TELEGRAM_ACCOUNT_UNLINK","Telegram ID uzildi")
         request.session.clear()
         return {"ok":True}
+
+
+    @app.post("/api/v2/account/qr")
+    async def v2_account_qr(request: Request):
+        u = require_login(request)
+        if u["role"] == "owner":
+            raise HTTPException(400, "Owner akkaunti bu usulda bog‘lanmaydi")
+        token = __import__("secrets").token_urlsafe(24)
+        created = int(time.time())
+        with db() as c:
+            c.execute("DELETE FROM portal_qr_links WHERE expires_at<? OR status!='pending'", (created,))
+            c.execute("INSERT INTO portal_qr_links(token,admin_id,expires_at,status) VALUES(?,?,?,'pending')", (token, int(u["id"]), created + 180))
+        return {"token": token, "url": "https://t.me/SanjarHelperBot?start=qr_" + token, "expires_in": 180}
+
+    @app.get("/api/v2/account/qr/{token}")
+    async def v2_account_qr_status(token: str, request: Request):
+        u = require_login(request)
+        with db() as c:
+            row = c.execute("SELECT status,telegram_id,expires_at FROM portal_qr_links WHERE token=? AND admin_id=?", (token, int(u["id"]))).fetchone()
+            if not row:
+                raise HTTPException(404, "QR sessiya topilmadi")
+            if int(row["expires_at"]) < int(time.time()) and row["status"] == "pending":
+                c.execute("UPDATE portal_qr_links SET status='expired' WHERE token=?", (token,))
+                return {"status": "expired"}
+            if row["status"] == "confirmed":
+                c.execute("UPDATE admins SET telegram_id=? WHERE id=?", (str(row["telegram_id"]), int(u["id"])))
+                c.execute("UPDATE portal_qr_links SET status='used' WHERE token=?", (token,))
+                audit(u["username"], "TELEGRAM_QR_LINK", "Telegram bot orqali profil bog‘landi")
+                return {"status": "confirmed", "telegram_id": str(row["telegram_id"])}
+            return {"status": row["status"]}
 
     @app.get("/api/v2/me")
     async def v2_me(request: Request):
