@@ -256,7 +256,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         with db() as c:
             if u["role"] == "owner":
                 rows=c.execute("SELECT * FROM portal_security_events ORDER BY created_at DESC LIMIT 300").fetchall()
-                moderation=c.execute("SELECT event_type,chat_id,payload,created_at FROM bridge_events WHERE lower(event_type) LIKE '%sticker%' OR lower(event_type) LIKE '%gif%' OR lower(event_type) LIKE '%emoji%' OR lower(event_type) LIKE '%adult%' OR lower(event_type) LIKE '%profile%' OR lower(event_type) LIKE '%ban%' OR lower(event_type) LIKE '%delete%' OR lower(event_type) LIKE '%join%' ORDER BY created_at DESC LIMIT 300").fetchall()
+                moderation=c.execute("SELECT event_type,chat_id,payload,created_at FROM bridge_events WHERE event_type='audit' OR lower(event_type) LIKE '%sticker%' OR lower(event_type) LIKE '%gif%' OR lower(event_type) LIKE '%emoji%' OR lower(event_type) LIKE '%adult%' OR lower(event_type) LIKE '%profile%' OR lower(event_type) LIKE '%ban%' OR lower(event_type) LIKE '%delete%' OR lower(event_type) LIKE '%join%' ORDER BY created_at DESC LIMIT 500").fetchall()
             else:
                 rows=c.execute("SELECT * FROM portal_security_events WHERE username=? ORDER BY created_at DESC LIMIT 100",(u["username"],)).fetchall()
                 moderation=[]
@@ -264,7 +264,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         for r in moderation:
             try: p=json.loads(r["payload"])
             except Exception: p={}
-            events.append({"type":r["event_type"],"actor":p.get("sender") or p.get("username") or p.get("user_id") or p.get("actor",""),"telegram_id":p.get("user_id") or p.get("telegram_id",""),"ip":"","summary":str(p.get("reason") or p.get("text") or p.get("action") or p.get("kind") or p.get("status") or "Moderatsiya hodisasi")[:400],"time":stamp(r["created_at"]),"severity":"warning"})
+            events.append({"type":r["event_type"],"actor":p.get("sender") or p.get("username") or p.get("actor") or p.get("actor_id",""),"telegram_id":p.get("user_id") or p.get("telegram_id") or p.get("actor_id",""),"ip":"","summary":str(p.get("details") or p.get("reason") or p.get("text") or p.get("action") or p.get("kind") or p.get("status") or "Moderatsiya hodisasi")[:400],"time":stamp(r["created_at"]),"severity":"warning"})
         events.sort(key=lambda x:x["time"],reverse=True)
         return {"events":events[:500]}
 
