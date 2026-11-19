@@ -256,9 +256,17 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
         with db() as c:
             if u["role"] == "owner":
                 rows=c.execute("SELECT * FROM portal_security_events ORDER BY created_at DESC LIMIT 300").fetchall()
+                moderation=c.execute("SELECT event_type,chat_id,payload,created_at FROM bridge_events WHERE lower(event_type) LIKE '%sticker%' OR lower(event_type) LIKE '%gif%' OR lower(event_type) LIKE '%emoji%' OR lower(event_type) LIKE '%adult%' OR lower(event_type) LIKE '%profile%' OR lower(event_type) LIKE '%ban%' OR lower(event_type) LIKE '%delete%' OR lower(event_type) LIKE '%join%' ORDER BY created_at DESC LIMIT 300").fetchall()
             else:
                 rows=c.execute("SELECT * FROM portal_security_events WHERE username=? ORDER BY created_at DESC LIMIT 100",(u["username"],)).fetchall()
-        return {"events":[{"type":r["event"],"actor":r["username"],"telegram_id":r["telegram_id"],"ip":r["ip"],"summary":r["details"],"time":stamp(r["created_at"]),"severity":"warning" if r["event"]=="LOGIN_FAILED" else "info"} for r in rows]}
+                moderation=[]
+        events=[{"type":r["event"],"actor":r["username"],"telegram_id":r["telegram_id"],"ip":r["ip"],"summary":r["details"],"time":stamp(r["created_at"]),"severity":"warning" if r["event"]=="LOGIN_FAILED" else "info"} for r in rows]
+        for r in moderation:
+            try: p=json.loads(r["payload"])
+            except Exception: p={}
+            events.append({"type":r["event_type"],"actor":p.get("sender") or p.get("username") or p.get("user_id") or p.get("actor",""),"telegram_id":p.get("user_id") or p.get("telegram_id",""),"ip":"","summary":str(p.get("reason") or p.get("text") or p.get("action") or p.get("kind") or p.get("status") or "Moderatsiya hodisasi")[:400],"time":stamp(r["created_at"]),"severity":"warning"})
+        events.sort(key=lambda x:x["time"],reverse=True)
+        return {"events":events[:500]}
 
     @app.get("/api/v2/events")
     async def v2_events(request: Request):
@@ -277,7 +285,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
 
     @app.get("/api/v2/applications")
     async def v2_applications(request: Request):
-        u=require_login(request); ids=visible(u)
+        u=require_owner(request); ids=visible(u)
         with db() as c:
             if ids is None: rows=c.execute("SELECT * FROM web_applications ORDER BY created_at DESC LIMIT 300").fetchall()
             elif ids:
@@ -287,7 +295,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
 
     @app.post("/api/v2/applications/{item_id}")
     async def v2_application_action(item_id:int,request:Request):
-        u=require_login(request); data=await request.json(); status=data.get("status")
+        u=require_owner(request); data=await request.json(); status=data.get("status")
         if status not in ("accepted","rejected"): raise HTTPException(400,"Status noto‘g‘ri")
         with db() as c:
             row=c.execute("SELECT * FROM web_applications WHERE id=?",(item_id,)).fetchone()
@@ -354,7 +362,7 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
 
     @app.post('/api/v2/chat/send')
     async def v2_chat_send(request: Request):
-        u = require_login(request)
+        u = require_owner(request)
         form = await request.form()
         chat_id = str(form.get('chat_id', '')).strip()
         message_text = str(form.get('text', '')).strip()
