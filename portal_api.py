@@ -180,8 +180,6 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
     @app.post("/api/v2/account/unlink")
     async def v2_unlink_account(request: Request):
         u=require_login(request)
-        if u["role"]=="owner":
-            raise HTTPException(400,"Owner akkauntini bu yerdan uzib bo‘lmaydi")
         with db() as c:
             c.execute("UPDATE admins SET telegram_id=NULL WHERE id=?",(u["id"],))
             c.execute("DELETE FROM group_access WHERE telegram_id=?",(str(u.get("telegram_id") or ""),))
@@ -193,8 +191,6 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
     @app.post("/api/v2/account/qr")
     async def v2_account_qr(request: Request):
         u = require_login(request)
-        if u["role"] == "owner":
-            raise HTTPException(400, "Owner akkaunti bu usulda bog‘lanmaydi")
         token = __import__("secrets").token_urlsafe(24)
         created = int(time.time())
         with db() as c:
