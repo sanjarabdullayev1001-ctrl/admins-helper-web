@@ -707,10 +707,27 @@ async def receive_bridge_event(request: Request):
         if event_type == "qr_confirm":
             token = str(payload.get("token") or "")[:100]
             telegram_id = str(payload.get("telegram_id") or "")
-            if not re.fullmatch(r"[A-Za-z0-9_-]{20,100}", token) or not telegram_id.isdigit():
+            if not re.fullmatch(r"[A-Za-z0-9_-]{20,100}", token) or not re.fullmatch(r"[1-9][0-9]{4,15}", telegram_id):
                 raise HTTPException(400, "QR tasdiqlash ma’lumoti noto‘g‘ri")
-            c.execute("UPDATE portal_qr_links SET telegram_id=?,status='confirmed' WHERE token=? AND status='pending' AND expires_at>=?",
-                      (telegram_id, token, created))
+            qr = c.execute(
+                "SELECT admin_id FROM portal_qr_links WHERE token=? AND status='pending' AND expires_at>=?",
+                (token, created)
+            ).fetchone()
+            if not qr:
+                raise HTTPException(410, "QR muddati tugagan yoki allaqachon ishlatilgan")
+            linked = c.execute(
+                "SELECT id FROM admins WHERE telegram_id=? AND id<>? AND active=1 LIMIT 1",
+                (telegram_id, int(qr["admin_id"]))
+            ).fetchone()
+            if linked:
+                raise HTTPException(409, "Bu Telegram profili boshqa portal hisobiga ulangan")
+            updated = c.execute(
+                "UPDATE portal_qr_links SET telegram_id=?,status='confirmed' "
+                "WHERE token=? AND status='pending' AND expires_at>=?",
+                (telegram_id, token, created)
+            )
+            if updated.rowcount != 1:
+                raise HTTPException(409, "QR tasdiqlash allaqachon ishlatilgan")
         if event_type == "group_access":
             telegram_id = str(payload.get("user_id") or "")
             role = str(payload.get("role") or "member")[:30]
