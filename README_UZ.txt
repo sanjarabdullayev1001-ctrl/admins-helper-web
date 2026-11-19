@@ -30,6 +30,9 @@ Asosiy sahifa / portalga yo'naltiruvchi tugma beradi.
 MUHIM XAVFSIZLIK
 - Har bir yangi foydalanuvchi login/parol bilan ro'yxatdan o'tadi.
 - Telegram ID ko'rsatilsa, bot bridge guruhdagi adminligini tasdiqlaganidan keyin guruhlar ko'rinadi.
+- QR bog'lash Telegram botidagi bir martalik deep-link orqali foydalanuvchining Telegram ID'sini tasdiqlaydi; bu shaxsiy MTProto sessiyasini olmaydi va shaxsiy xabarlarni o'qish yoki foydalanuvchi nomidan harakat qilish huquqini bermaydi.
+- QR token 3 daqiqa amal qiladi, bir marta ishlatiladi va Telegram ID boshqa faol portal hisobiga bog'langan bo'lsa rad etiladi.
+- Har bir foydalanuvchi faqat o'z portal hisobiga QR tasdiqlashi kerak; QR havolasini boshqalarga yubormang.
 - Foydalanuvchilar faqat group_access orqali o'zlariga biriktirilgan guruhlarni ko'radi.
 - Owner barcha guruhlar va adminlarni boshqaradi.
 - Qora ro'yxat web hisobiga kirishni to'sadi; Telegram guruhidan ban qilishni o'zi bajarmaydi.
