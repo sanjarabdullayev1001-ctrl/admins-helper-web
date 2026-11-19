@@ -674,7 +674,7 @@ async def receive_bridge_event(request: Request):
 
     event_type = payload.get("type")
 
-    if event_type not in {"access", "group", "message", "member", "group_access", "security", "application", "audit"}:
+    if event_type not in {"access", "group", "message", "member", "group_access", "security", "application", "audit", "qr_confirm"}:
         raise HTTPException(400, "Event turi noto‘g‘ri")
 
     chat_id = str(
@@ -704,6 +704,13 @@ async def receive_bridge_event(request: Request):
             )
         )
 
+        if event_type == "qr_confirm":
+            token = str(payload.get("token") or "")[:100]
+            telegram_id = str(payload.get("telegram_id") or "")
+            if not re.fullmatch(r"[A-Za-z0-9_-]{20,100}", token) or not telegram_id.isdigit():
+                raise HTTPException(400, "QR tasdiqlash ma’lumoti noto‘g‘ri")
+            c.execute("UPDATE portal_qr_links SET telegram_id=?,status='confirmed' WHERE token=? AND status='pending' AND expires_at>=?",
+                      (telegram_id, token, created))
         if event_type == "group_access":
             telegram_id = str(payload.get("user_id") or "")
             role = str(payload.get("role") or "member")[:30]
