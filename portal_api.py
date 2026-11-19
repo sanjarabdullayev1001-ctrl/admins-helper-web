@@ -396,7 +396,9 @@ def install(app, db, pwd, audit, now, require_login, require_owner, visible_chat
 
     @app.get('/api/v2/chat')
     async def v2_chat(request: Request):
-        u = require_login(request)
+        # Telegram xabarlar bo'limi owner-only: UI yashirilishi yetarli emas,
+        # API ham oddiy foydalanuvchiga guruh/xabar tarixini bermasligi kerak.
+        u = require_owner(request)
         ids = visible(u)
         with db() as c:
             if ids is None:
